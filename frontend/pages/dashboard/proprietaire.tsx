@@ -1,0 +1,1246 @@
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/router'
+import Link from 'next/link'
+import Image from 'next/image'
+import axios from 'axios'
+import Header from '../../components/Header'
+import Footer from '../../components/Footer'
+import ProtectedRoute from '../../components/ProtectedRoute'
+import { useAuth } from '../../contexts/AuthContext'
+import { usePayment } from '../../contexts/PaymentContext'
+import { usePaymentSync } from '../../hooks/usePaymentSync'
+import ApplicationCard from '../../components/proprietaire/ApplicationCard'
+import { getUnitImagePath } from '../../utils/imageUtils'
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'
+
+interface DashboardStats {
+  totalUnits: number
+  availableUnits: number
+  rentedUnits: number
+  occupancyRate: number
+  totalRequests: number
+  pendingRequests: number
+  acceptedRequests: number
+  documentsToSign: number
+  pendingInitialPayments: number
+  monthlyRevenue: number
+  receivedThisMonth: number
+  overdueCount: number
+  alertsCount: number
+}
+
+interface Unit {
+  _id: string
+  unitNumber: string
+  type: string
+  status: string
+  rentPrice?: number
+  images?: string[]
+  imageUrl?: string
+  building: {
+    name: string
+    image?: string
+    imageUrl?: string
+  }
+  locataire?: {
+    firstName: string
+    lastName: string
+    email: string
+  }
+  paidThisMonth?: number
+  pendingPayment?: {
+    amount: number
+    dueDate: string
+  }
+  hasOverdue?: boolean
+  hasMaintenance?: boolean
+}
+
+interface OverduePayment {
+  id: string
+  amount: number
+  dueDate: string
+  unit: {
+    unitNumber: string
+  }
+  payer: {
+    firstName: string
+    lastName: string
+  }
+}
+
+interface MaintenanceRequest {
+  id: string
+  type: string
+  title: string
+  status: string
+  unit?: {
+    unitNumber: string
+  }
+  createdAt: string
+}
+
+interface Application {
+  _id: string
+  title: string
+  description: string
+  type: 'location' | 'achat'
+  status: string
+  createdAt: string
+  createdBy: {
+    _id: string
+    firstName: string
+    lastName: string
+    email: string
+    phone?: string
+  }
+  unit: {
+    _id: string
+    unitNumber: string
+  }
+  building?: {
+    name: string
+  }
+}
+
+interface AcceptedRequest {
+  _id: string
+  type: 'location' | 'achat'
+  title: string
+  status: string
+  createdAt: string
+  approvedAt: string
+  unit: {
+    _id: string
+    unitNumber: string
+  }
+  building?: {
+    name: string
+  }
+  createdBy: {
+    _id: string
+    firstName: string
+    lastName: string
+    email: string
+    phone?: string
+  }
+  approvedBy?: {
+    firstName: string
+    lastName: string
+  }
+  generatedDocuments: Array<{
+    _id?: string
+    type: string
+    filename: string
+    path: string
+    signed: boolean
+    generatedAt?: string
+  }>
+  initialPayment?: {
+    amount: number
+    status: string
+  }
+}
+
+interface PendingInitialPayment {
+  _id: string
+  type: 'location' | 'achat'
+  title: string
+  status: string
+  createdAt: string
+  approvedAt: string
+  unit: {
+    _id: string
+    unitNumber: string
+  }
+  building?: {
+    name: string
+  }
+  createdBy: {
+    _id: string
+    firstName: string
+    lastName: string
+    email: string
+  }
+  initialPayment: {
+    amount: number
+    status: string
+  }
+}
+
+export default function ProprietaireDashboard() {
+  const { user: authUser } = useAuth()
+  const { refreshPaymentStatus } = usePayment()
+  const router = useRouter()
+  const [dashboardData, setDashboardData] = useState<{
+    stats: DashboardStats
+    unitsWithDetails: Unit[]
+    receivedPayments?: any[]
+    overduePayments: OverduePayment[]
+    maintenanceRequests: MaintenanceRequest[]
+    applications?: Application[]
+    acceptedRequestsWithDocs?: AcceptedRequest[]
+    pendingInitialPayments?: PendingInitialPayment[]
+  } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards')
+  const [connectionError, setConnectionError] = useState<string | null>(null)
+
+  const loadDashboardData = async () => {
+    setLoading(true)
+    setConnectionError(null)
+    
+    try {
+      const token = localStorage.getItem('authToken')
+      if (!token) {
+        console.error('[PROPRIETAIRE DASHBOARD] ❌ Aucun token d\'authentification trouvé')
+        setLoading(false)
+        return
+      }
+
+      console.log('[PROPRIETAIRE DASHBOARD] 🔄 Chargement des données depuis:', `${API_URL}/proprietaire/dashboard`)
+      
+      const response = await axios.get(`${API_URL}/proprietaire/dashboard`, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        },
+        timeout: 15000 // 15 secondes de timeout
+      })
+      
+      console.log('[PROPRIETAIRE DASHBOARD] ✅ Réponse reçue:', response.status)
+      
+      // Réinitialiser l'erreur si la connexion réussit
+      setConnectionError(null)
+      
+      // Traiter la réponse même si certaines données sont manquantes
+      const data = response.data?.data || {}
+      console.log('[PROPRIETAIRE DASHBOARD] 📊 Données reçues:', data)
+      
+      // Initialiser avec des valeurs par défaut si certaines données sont manquantes
+      setDashboardData({
+        stats: data.stats || {
+          totalUnits: 0,
+          availableUnits: 0,
+          rentedUnits: 0,
+          occupancyRate: 0,
+          totalRequests: 0,
+          pendingRequests: 0,
+          acceptedRequests: 0,
+          documentsToSign: 0,
+          pendingInitialPayments: 0,
+          monthlyRevenue: 0,
+          receivedThisMonth: 0,
+          overdueCount: 0,
+          alertsCount: 0
+        },
+        unitsWithDetails: data.unitsWithDetails || [],
+        receivedPayments: data.receivedPayments || [],
+        overduePayments: data.overduePayments || [],
+        maintenanceRequests: data.maintenanceRequests || [],
+        applications: data.applications || [],
+        acceptedRequestsWithDocs: data.acceptedRequestsWithDocs || [],
+        pendingInitialPayments: data.pendingInitialPayments || []
+      })
+      
+      console.log('[PROPRIETAIRE DASHBOARD] ✨ Données traitées et chargées')
+      setLoading(false)
+    } catch (error: any) {
+      console.error('[PROPRIETAIRE DASHBOARD] ❌ Erreur:', error)
+      
+      // Gestion d'erreur plus détaillée
+      let errorMessage = 'Erreur de connexion'
+      
+      if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+        errorMessage = 'Le serveur met trop de temps à répondre. Vérifiez que le backend est démarré sur le port 5000.'
+      } else if (error.request && !error.response) {
+        errorMessage = 'Impossible de se connecter au serveur. Vérifiez que le backend est démarré (port 5000) et votre connexion internet.'
+      } else if (error.response) {
+        console.error('Status:', error.response.status)
+        console.error('Data:', error.response.data)
+        
+        if (error.response.status === 401) {
+          errorMessage = 'Session expirée. Veuillez vous reconnecter.'
+          setTimeout(() => {
+            router.push('/login')
+          }, 2000)
+        } else if (error.response.status === 403) {
+          errorMessage = 'Accès refusé. Vous n\'avez pas les permissions nécessaires.'
+        } else if (error.response.status === 404) {
+          errorMessage = 'Route non trouvée. Vérifiez que le backend est démarré et que la route /api/proprietaire/dashboard existe.'
+        } else if (error.response.status >= 500) {
+          errorMessage = 'Erreur serveur. Veuillez réessayer plus tard ou contacter le support.'
+        } else {
+          errorMessage = error.response.data?.message || `Erreur ${error.response.status}: ${error.response.statusText}`
+        }
+      }
+      
+      // Afficher l'erreur à l'utilisateur
+      setConnectionError(errorMessage)
+      console.error('Erreur:', errorMessage)
+      
+      // Initialiser avec des valeurs par défaut en cas d'erreur
+      setDashboardData({
+        stats: {
+          totalUnits: 0,
+          availableUnits: 0,
+          rentedUnits: 0,
+          occupancyRate: 0,
+          totalRequests: 0,
+          pendingRequests: 0,
+          acceptedRequests: 0,
+          documentsToSign: 0,
+          pendingInitialPayments: 0,
+          monthlyRevenue: 0,
+          receivedThisMonth: 0,
+          overdueCount: 0,
+          alertsCount: 0
+        },
+        unitsWithDetails: [],
+        receivedPayments: [],
+        overduePayments: [],
+        maintenanceRequests: [],
+        applications: [],
+        acceptedRequestsWithDocs: [],
+        pendingInitialPayments: []
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Fonction de refresh sans afficher le loading (pour les synchronisations automatiques)
+  const refreshDashboardData = async () => {
+    try {
+      const token = localStorage.getItem('authToken')
+      if (!token) return
+
+      const response = await axios.get(`${API_URL}/proprietaire/dashboard`, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        },
+        timeout: 15000
+      })
+      
+      if (response.data?.data) {
+        const data = response.data.data
+        setDashboardData({
+          stats: data.stats || {
+            totalUnits: 0,
+            availableUnits: 0,
+            rentedUnits: 0,
+            occupancyRate: 0,
+            totalRequests: 0,
+            pendingRequests: 0,
+            acceptedRequests: 0,
+            documentsToSign: 0,
+            pendingInitialPayments: 0,
+            monthlyRevenue: 0,
+            receivedThisMonth: 0,
+            overdueCount: 0,
+            alertsCount: 0
+          },
+          unitsWithDetails: data.unitsWithDetails || [],
+          receivedPayments: data.receivedPayments || [],
+          overduePayments: data.overduePayments || [],
+          maintenanceRequests: data.maintenanceRequests || [],
+          applications: data.applications || [],
+          acceptedRequestsWithDocs: data.acceptedRequestsWithDocs || [],
+          pendingInitialPayments: data.pendingInitialPayments || []
+        })
+        setConnectionError(null)
+      }
+    } catch (error) {
+      console.error('[PROPRIETAIRE DASHBOARD] Erreur refresh silencieux:', error)
+    }
+  }
+
+  useEffect(() => {
+    loadDashboardData()
+  }, [])
+
+  // Utiliser le hook de synchronisation centralisé (sans afficher le loading)
+  usePaymentSync(refreshDashboardData, [authUser?._id])
+
+  const getStatusColor = (status: string) => {
+    const colors: { [key: string]: string } = {
+      'disponible': 'bg-green-100 text-green-800',
+      'loue': 'bg-blue-100 text-blue-800',
+      'vendu': 'bg-gray-100 text-gray-800',
+      'maintenance': 'bg-orange-100 text-orange-800'
+    }
+    return colors[status] || 'bg-gray-100 text-gray-800'
+  }
+
+  const getStatusLabel = (status: string) => {
+    const labels: { [key: string]: string } = {
+      'disponible': 'Disponible',
+      'loue': 'Loué',
+      'vendu': 'Vendu',
+      'maintenance': 'En maintenance'
+    }
+    return labels[status] || status
+  }
+
+  const getTypeLabel = (type: string) => {
+    const labels: { [key: string]: string } = {
+      'studio': 'Studio',
+      '1br': '1 chambre',
+      '2br': '2 chambres',
+      '3br': '3 chambres',
+      '4br': '4+ chambres',
+      'penthouse': 'Penthouse',
+      'commercial': 'Commercial'
+    }
+    return labels[type] || type
+  }
+
+  const formatPrice = (price?: number) => price ? `$${price.toLocaleString()}` : 'N/A'
+  const formatDate = (dateString?: string) => {
+    if (!dateString) return ''
+    return new Date(dateString).toLocaleDateString('fr-CA', { day: 'numeric', month: 'long', year: 'numeric' })
+  }
+
+  if (loading) {
+    return (
+      <ProtectedRoute requiredRoles={['proprietaire']}>
+        <Header />
+        <div className="min-h-screen bg-gray-50 pt-20 flex items-center justify-center">
+          <div className="text-center">
+            <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
+            <p className="text-gray-600">Chargement du tableau de bord...</p>
+          </div>
+        </div>
+        <Footer />
+      </ProtectedRoute>
+    )
+  }
+
+  // S'assurer que dashboardData est toujours initialisé
+  if (!dashboardData) {
+    return (
+      <ProtectedRoute requiredRoles={['proprietaire']}>
+        <Header />
+        <div className="min-h-screen bg-gray-50 pt-20 flex items-center justify-center">
+          <div className="text-center">
+            <div className="text-6xl mb-4">📊</div>
+            <h2 className="text-2xl font-bold mb-2">Aucune donnée disponible</h2>
+            <p className="text-gray-600 mb-6">
+              Impossible de charger les données du tableau de bord.
+            </p>
+            <button
+              onClick={() => {
+                setLoading(true)
+                loadDashboardData()
+              }}
+              className="btn-primary"
+            >
+              Réessayer
+            </button>
+          </div>
+        </div>
+        <Footer />
+      </ProtectedRoute>
+    )
+  }
+
+  return (
+    <ProtectedRoute requiredRoles={['proprietaire']}>
+      <Header />
+      <div className="min-h-screen bg-gray-50 pt-20">
+        <div className="container mx-auto px-4 py-12">
+          {/* Message d'erreur de connexion */}
+          {connectionError && (
+            <div className="mb-6 p-4 bg-red-50 border-l-4 border-red-500 rounded-lg">
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  <h3 className="text-lg font-semibold text-red-800 mb-2">⚠️ Erreur de connexion</h3>
+                  <p className="text-red-700">{connectionError}</p>
+                  <div className="mt-3 text-sm text-red-600">
+                    <p><strong>Vérifications à faire :</strong></p>
+                    <ul className="list-disc list-inside mt-1 space-y-1">
+                      <li>Le backend est-il démarré sur le port 5000 ?</li>
+                      <li>Votre connexion internet fonctionne-t-elle ?</li>
+                      <li>Votre session est-elle toujours valide ?</li>
+                    </ul>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setConnectionError(null)
+                    loadDashboardData()
+                  }}
+                  className="ml-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm"
+                >
+                  Réessayer
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* En-tête personnalisé */}
+          <div className="mb-8">
+            <div className="bg-gradient-to-r from-primary-600 to-primary-800 rounded-2xl shadow-xl p-8 text-white">
+              <div className="flex items-center justify-between flex-wrap gap-4">
+                <div className="flex items-center gap-6">
+                  <div className="w-20 h-20 bg-white bg-opacity-20 rounded-full flex items-center justify-center text-white text-3xl font-bold shadow-lg backdrop-blur-sm border-4 border-white border-opacity-30">
+                    {authUser?.firstName?.charAt(0) || 'P'}{authUser?.lastName?.charAt(0) || ''}
+                  </div>
+                  <div>
+                    <h1 className="text-4xl font-bold mb-2">
+                      {authUser?.firstName} {authUser?.lastName}
+                    </h1>
+                    <p className="text-primary-100 text-lg mb-1">
+                      {authUser?.email}
+                    </p>
+                    <p className="text-primary-100 text-sm">
+                      {dashboardData?.stats?.totalUnits || 0} unité{dashboardData?.stats?.totalUnits !== 1 ? 's' : ''} en gestion
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-3">
+                  <Link 
+                    href="/units?action=add" 
+                    className="px-6 py-3 bg-white bg-opacity-20 hover:bg-opacity-30 rounded-lg transition-all text-white font-semibold backdrop-blur-sm border border-white border-opacity-30"
+                  >
+                    ➕ Ajouter une unité
+                  </Link>
+                  <Link 
+                    href="/payments/proprietaire" 
+                    className="px-6 py-3 bg-white bg-opacity-20 hover:bg-opacity-30 rounded-lg transition-all text-white font-semibold backdrop-blur-sm border border-white border-opacity-30"
+                  >
+                    💵 Voir mes paiements reçus
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Notifications d'alertes */}
+          {dashboardData && dashboardData.stats && dashboardData.stats.alertsCount > 0 && (
+            <div className="mb-8 space-y-3">
+              {dashboardData.overduePayments && dashboardData.overduePayments.length > 0 && (
+                <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center flex-1">
+                      <div className="text-2xl mr-3">⚠️</div>
+                      <div className="flex-1">
+                        <h3 className="font-bold text-red-800">Loyers impayés</h3>
+                        <p className="text-red-700">
+                          {dashboardData.overduePayments.length} paiement(s) en retard nécessitent votre attention
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        console.log('[DASHBOARD] Clic sur bouton - Navigation vers paiements en retard');
+                        // Utiliser window.location.href directement pour forcer la navigation
+                        window.location.href = '/payments/proprietaire?status=en_retard';
+                      }}
+                      className="ml-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium text-sm whitespace-nowrap cursor-pointer"
+                    >
+                      Voir les paiements →
+                    </button>
+                  </div>
+                </div>
+              )}
+              {dashboardData.maintenanceRequests && dashboardData.maintenanceRequests.length > 0 && (
+                <div className="bg-orange-50 border-l-4 border-orange-500 p-4 rounded-lg">
+                  <div className="flex items-center">
+                    <div className="text-2xl mr-3">🔧</div>
+                    <div className="flex-1">
+                      <h3 className="font-bold text-orange-800">Maintenance en cours</h3>
+                      <p className="text-orange-700">
+                        {dashboardData.maintenanceRequests.length} demande(s) de maintenance à traiter
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Statistiques rapides */}
+          {dashboardData && dashboardData.stats ? (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <Link href="/proprietaire/mes-unites" className="card p-6 bg-gradient-to-br from-blue-500 to-blue-600 text-white hover:shadow-xl transition-all duration-300 cursor-pointer transform hover:scale-105">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-blue-100 text-sm mb-1">Total d'unités</p>
+                      <p className="text-3xl font-bold">{dashboardData.stats.totalUnits}</p>
+                      <p className="text-blue-100 text-xs mt-1">{dashboardData.stats.occupancyRate}% occupées</p>
+                    </div>
+                    <div className="text-4xl opacity-80">🏠</div>
+                  </div>
+                </Link>
+
+                <Link href="/payments" className="card p-6 bg-gradient-to-br from-green-500 to-green-600 text-white hover:shadow-xl transition-all duration-300 cursor-pointer transform hover:scale-105">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-green-100 text-sm mb-1">Revenus mensuels</p>
+                      <p className="text-2xl font-bold">{formatPrice(dashboardData.stats.monthlyRevenue)}</p>
+                      <p className="text-green-100 text-xs mt-1">{formatPrice(dashboardData.stats.receivedThisMonth)} reçus</p>
+                    </div>
+                    <div className="text-4xl opacity-80">💰</div>
+                  </div>
+                </Link>
+
+                <Link href="#documents-a-signer" className="card p-6 bg-gradient-to-br from-orange-500 to-orange-600 text-white hover:shadow-xl transition-all duration-300 cursor-pointer transform hover:scale-105">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-orange-100 text-sm mb-1">Documents à signer</p>
+                      <p className="text-3xl font-bold">{dashboardData.stats.documentsToSign || 0}</p>
+                      <p className="text-orange-100 text-xs mt-1">{dashboardData.stats.acceptedRequests || 0} demande{dashboardData.stats.acceptedRequests !== 1 ? 's' : ''}</p>
+                    </div>
+                    <div className="text-4xl opacity-80">📝</div>
+                  </div>
+                </Link>
+
+                <Link href="/proprietaire/consult-units" className="card p-6 bg-gradient-to-br from-purple-500 to-purple-600 text-white hover:shadow-xl transition-all duration-300 cursor-pointer transform hover:scale-105">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-purple-100 text-sm mb-1">Disponibles</p>
+                      <p className="text-3xl font-bold">{dashboardData.stats.availableUnits}</p>
+                      <p className="text-purple-100 text-xs mt-1">À louer</p>
+                    </div>
+                    <div className="text-4xl opacity-80">✅</div>
+                  </div>
+                </Link>
+              </div>
+
+              {/* Section 1 - Mes Unités */}
+              {dashboardData.unitsWithDetails && dashboardData.unitsWithDetails.length > 0 && (
+                <div className="card p-6 mb-8">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-2xl font-bold flex items-center">
+                      <span className="mr-3 text-3xl">🏘️</span>
+                      Mes Unités
+                    </h2>
+                    <div className="flex items-center gap-3">
+                      <Link href="/units?action=add" className="btn-primary text-sm">
+                        ➕ Ajouter une unité
+                      </Link>
+                      <div className="flex items-center space-x-2">
+                        <button
+                          onClick={() => setViewMode('cards')}
+                          className={`px-3 py-1 rounded-lg ${viewMode === 'cards' ? 'bg-primary-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+                        >
+                          Cartes
+                        </button>
+                        <button
+                          onClick={() => setViewMode('table')}
+                          className={`px-3 py-1 rounded-lg ${viewMode === 'table' ? 'bg-primary-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+                        >
+                          Tableau
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {viewMode === 'cards' ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {dashboardData.unitsWithDetails.map((unit) => (
+                      <div key={unit._id} className="border border-gray-200 rounded-lg overflow-hidden hover:shadow-lg transition-shadow bg-white">
+                        {/* Image de l'unité */}
+                        <div className="relative aspect-[4/3] w-full overflow-hidden bg-gray-200">
+                          {(() => {
+                            // Déterminer le chemin de l'image
+                            let imageSrc = getUnitImagePath(unit)
+                            if (unit.images && unit.images.length > 0) {
+                              const firstImage = unit.images[0]
+                              if (firstImage.startsWith('/images/')) {
+                                imageSrc = firstImage
+                              } else if (firstImage.startsWith('http')) {
+                                imageSrc = firstImage
+                              } else {
+                                imageSrc = `/images/unites/${firstImage}`
+                              }
+                            } else if (unit.imageUrl) {
+                              if (unit.imageUrl.startsWith('/images/')) {
+                                imageSrc = unit.imageUrl
+                              } else if (unit.imageUrl.startsWith('http')) {
+                                imageSrc = unit.imageUrl
+                              } else {
+                                imageSrc = `/images/unites/${unit.imageUrl}`
+                              }
+                            }
+                            
+                            return (
+                              <Image
+                                src={imageSrc}
+                                alt={`Unité ${unit.unitNumber} - ${unit.building.name}`}
+                                fill
+                                className="object-cover"
+                                sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+                                onError={(e) => {
+                                  const target = e.target as HTMLImageElement
+                                  target.src = '/images/default/placeholder.jpg'
+                                }}
+                              />
+                            )
+                          })()}
+                          {/* Badges sur l'image */}
+                          <div className="absolute top-3 right-3 z-10 flex flex-col items-end space-y-1">
+                            <span className={`px-2 py-1 rounded-full text-xs font-semibold bg-white bg-opacity-90 ${getStatusColor(unit.status)}`}>
+                              {getStatusLabel(unit.status)}
+                            </span>
+                            {unit.hasOverdue && (
+                              <span className="px-2 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-800">
+                                ⚠️ En retard
+                              </span>
+                            )}
+                            {unit.hasMaintenance && (
+                              <span className="px-2 py-1 rounded-full text-xs font-semibold bg-orange-100 text-orange-800">
+                                🔧 Maintenance
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="p-4">
+                          <div className="mb-3">
+                            <h3 className="text-lg font-bold">Unité {unit.unitNumber}</h3>
+                            <p className="text-sm text-gray-600">{unit.building.name}</p>
+                            <p className="text-xs text-gray-500 mt-1">{getTypeLabel(unit.type)}</p>
+                          </div>
+
+                        {unit.locataire && (
+                          <div className="mb-3 p-2 bg-gray-50 rounded">
+                            <p className="text-sm font-semibold text-gray-700">
+                              Locataire: {unit.locataire.firstName} {unit.locataire.lastName}
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="space-y-2 mb-3">
+                          {unit.rentPrice && (
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-600">Loyer mensuel:</span>
+                              <span className="font-semibold">{formatPrice(unit.rentPrice)}</span>
+                            </div>
+                          )}
+                          {unit.paidThisMonth !== undefined && unit.paidThisMonth > 0 && (
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-600">Reçu ce mois:</span>
+                              <span className="font-semibold text-green-600">{formatPrice(unit.paidThisMonth)}</span>
+                            </div>
+                          )}
+                          {unit.pendingPayment && (
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-600">En attente:</span>
+                              <span className={`font-semibold ${unit.hasOverdue ? 'text-red-600' : 'text-orange-600'}`}>
+                                {formatPrice(unit.pendingPayment.amount)}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex gap-2 mt-4">
+                          <Link href={`/documents?unit=${unit._id}`} className="flex-1 btn-secondary text-center text-sm">
+                            📄 Voir contrat
+                          </Link>
+                          <Link href={`/payments?unit=${unit._id}`} className="flex-1 btn-secondary text-center text-sm">
+                            🧾 Gérer paiements
+                          </Link>
+                          {unit.locataire && (
+                            <Link 
+                              href={`/messages?contact=${unit.locataire._id || unit.locataire}`}
+                              className="btn-primary text-sm"
+                            >
+                              💬 Message
+                            </Link>
+                          )}
+                        </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Unité</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Statut</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Locataire</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Loyer</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reçu</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Alertes</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {dashboardData.unitsWithDetails.map((unit) => (
+                          <tr key={unit._id} className="hover:bg-gray-50">
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-3">
+                                {/* Miniature de l'unité */}
+                                <div className="relative w-16 h-16 flex-shrink-0 rounded-lg overflow-hidden bg-gray-200">
+                                  {(() => {
+                                    // Déterminer le chemin de l'image
+                                    let imageSrc = getUnitImagePath(unit)
+                                    if (unit.images && unit.images.length > 0) {
+                                      const firstImage = unit.images[0]
+                                      if (firstImage.startsWith('/images/')) {
+                                        imageSrc = firstImage
+                                      } else if (firstImage.startsWith('http')) {
+                                        imageSrc = firstImage
+                                      } else {
+                                        imageSrc = `/images/unites/${firstImage}`
+                                      }
+                                    } else if (unit.imageUrl) {
+                                      if (unit.imageUrl.startsWith('/images/')) {
+                                        imageSrc = unit.imageUrl
+                                      } else if (unit.imageUrl.startsWith('http')) {
+                                        imageSrc = unit.imageUrl
+                                      } else {
+                                        imageSrc = `/images/unites/${unit.imageUrl}`
+                                      }
+                                    }
+                                    
+                                    return (
+                                      <Image
+                                        src={imageSrc}
+                                        alt={`Unité ${unit.unitNumber}`}
+                                        fill
+                                        className="object-cover"
+                                        sizes="64px"
+                                        onError={(e) => {
+                                          const target = e.target as HTMLImageElement
+                                          target.src = '/images/default/placeholder.jpg'
+                                        }}
+                                      />
+                                    )
+                                  })()}
+                                </div>
+                                <div>
+                                  <p className="font-semibold">Unité {unit.unitNumber}</p>
+                                  <p className="text-xs text-gray-500">{unit.building.name}</p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 text-sm">{getTypeLabel(unit.type)}</td>
+                            <td className="px-4 py-3">
+                              <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getStatusColor(unit.status)}`}>
+                                {getStatusLabel(unit.status)}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-sm">
+                              {unit.locataire ? (
+                                `${unit.locataire.firstName} ${unit.locataire.lastName}`
+                              ) : (
+                                <span className="text-gray-400">-</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-sm font-semibold">{formatPrice(unit.rentPrice)}</td>
+                            <td className="px-4 py-3">
+                              <div>
+                                {unit.paidThisMonth !== undefined && unit.paidThisMonth > 0 ? (
+                                  <span className="text-sm font-semibold text-green-600">{formatPrice(unit.paidThisMonth)}</span>
+                                ) : (
+                                  <span className="text-sm text-gray-400">-</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex space-x-1">
+                                {unit.hasOverdue && (
+                                  <span className="px-2 py-1 rounded text-xs bg-red-100 text-red-800" title="Paiement en retard">
+                                    ⚠️
+                                  </span>
+                                )}
+                                {unit.hasMaintenance && (
+                                  <span className="px-2 py-1 rounded text-xs bg-orange-100 text-orange-800" title="Maintenance en cours">
+                                    🔧
+                                  </span>
+                                )}
+                                {!unit.hasOverdue && !unit.hasMaintenance && (
+                                  <span className="text-gray-400">-</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex space-x-2">
+                                <Link href={`/units/${unit._id}`} className="text-primary-600 hover:text-primary-700 text-sm">
+                                  Voir
+                                </Link>
+                                {unit.locataire && (
+                                  <button className="text-primary-600 hover:text-primary-700 text-sm">
+                                    Message
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  )}
+                </div>
+              )}
+
+              {/* Section 2 - Demandes en cours */}
+              <div className="card p-6 mb-8">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-2xl font-bold flex items-center">
+                    <span className="mr-3 text-3xl">💬</span>
+                    Demandes en cours
+                  </h2>
+                  <Link href="/requests" className="text-primary-600 hover:text-primary-700 font-medium text-sm">
+                    Voir tout →
+                  </Link>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                  <div className="bg-yellow-50 rounded-lg p-4 border-2 border-yellow-200 text-center">
+                    <div className="text-3xl mb-2">⏳</div>
+                    <p className="font-semibold text-gray-900">
+                      En attente ({dashboardData.stats?.pendingRequests || 0})
+                    </p>
+                  </div>
+                  <div className="bg-blue-50 rounded-lg p-4 border-2 border-blue-200 text-center">
+                    <div className="text-3xl mb-2">🔄</div>
+                    <p className="font-semibold text-gray-900">
+                      En cours ({dashboardData.maintenanceRequests?.filter(r => r.status === 'en_cours').length || 0})
+                    </p>
+                  </div>
+                  <div className="bg-green-50 rounded-lg p-4 border-2 border-green-200 text-center">
+                    <div className="text-3xl mb-2">✅</div>
+                    <p className="font-semibold text-gray-900">
+                      Terminées ({dashboardData.maintenanceRequests?.filter(r => r.status === 'termine').length || 0})
+                    </p>
+                  </div>
+                </div>
+
+                {dashboardData.maintenanceRequests && dashboardData.maintenanceRequests.length > 0 ? (
+                  <div className="space-y-3">
+                    {dashboardData.maintenanceRequests.slice(0, 5).map((request) => (
+                      <div key={request.id} className="bg-gray-50 rounded-lg p-4 border-l-4 border-primary-500 hover:bg-gray-100 transition-colors">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <h3 className="font-semibold text-lg mb-1">{request.title}</h3>
+                            <div className="flex items-center gap-3 text-sm text-gray-600">
+                              <span>Type: {request.type}</span>
+                              {request.unit && <span>Unité: {request.unit.unitNumber}</span>}
+                              <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                                request.status === 'en_attente' ? 'bg-yellow-100 text-yellow-800' :
+                                request.status === 'en_cours' ? 'bg-blue-100 text-blue-800' :
+                                'bg-green-100 text-green-800'
+                              }`}>
+                                {request.status === 'en_attente' ? 'En attente' :
+                                 request.status === 'en_cours' ? 'En cours' :
+                                 'Terminée'}
+                              </span>
+                            </div>
+                          </div>
+                          <Link 
+                            href={`/requests/${request.id}`} 
+                            className="ml-4 px-4 py-2 bg-primary-50 text-primary-700 rounded-lg hover:bg-primary-100 transition-colors font-medium text-sm"
+                          >
+                            Voir détails
+                          </Link>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-center py-8 text-gray-500">Aucune demande en cours</p>
+                )}
+              </div>
+
+              {/* Section 3 - Documents à signer */}
+              {dashboardData.acceptedRequestsWithDocs && dashboardData.acceptedRequestsWithDocs.length > 0 && (
+                <div id="documents-a-signer" className="card p-6 mb-8 border-2 border-orange-200 bg-orange-50">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-2xl font-bold flex items-center text-orange-900">
+                      <span className="mr-3 text-3xl">📝</span>
+                      Documents à signer
+                    </h2>
+                    <span className="text-sm font-semibold text-orange-700 bg-orange-200 px-3 py-1 rounded-full">
+                      {dashboardData.stats.documentsToSign || 0} document{dashboardData.stats.documentsToSign !== 1 ? 's' : ''} en attente
+                    </span>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    {dashboardData.acceptedRequestsWithDocs.map((request) => {
+                      const unsignedDocs = request.generatedDocuments.filter(doc => !doc.signed || doc.signed === false);
+                      if (unsignedDocs.length === 0) return null;
+                      
+                      return (
+                        <div key={request._id} className="bg-white rounded-lg p-5 border-2 border-orange-300 shadow-md hover:shadow-lg transition-shadow">
+                          <div className="flex items-start justify-between mb-4">
+                            <div className="flex-1">
+                              <h3 className="font-bold text-lg text-gray-900 mb-2">
+                                {request.type === 'location' ? '📍 Location' : '🏠 Achat'} - Unité {request.unit?.unitNumber}
+                              </h3>
+                              <div className="text-sm text-gray-600 space-y-1">
+                                <p><strong>Demandeur:</strong> {request.createdBy?.firstName} {request.createdBy?.lastName}</p>
+                                <p><strong>Email:</strong> {request.createdBy?.email}</p>
+                                {request.building?.name && <p><strong>Immeuble:</strong> {request.building.name}</p>}
+                                <p><strong>Acceptée le:</strong> {formatDate(request.approvedAt)}</p>
+                              </div>
+                            </div>
+                            <Link
+                              href={`/proprietaire/requests/${request._id}`}
+                              className="ml-4 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors font-medium text-sm"
+                            >
+                              Voir et signer →
+                            </Link>
+                          </div>
+                          
+                          <div className="mt-4 pt-4 border-t border-orange-200">
+                            <p className="text-sm font-semibold text-gray-700 mb-2">Documents en attente de signature:</p>
+                            <div className="space-y-2">
+                              {unsignedDocs.map((doc, idx) => (
+                                <div key={idx} className="flex items-center justify-between bg-orange-50 p-3 rounded">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xl">📄</span>
+                                    <span className="font-medium text-gray-800">{doc.filename}</span>
+                                    <span className="text-xs text-gray-600">({doc.type === 'bail' ? 'Bail' : doc.type === 'contrat_vente' ? 'Contrat de vente' : 'Document'})</span>
+                                  </div>
+                                  <span className="px-2 py-1 bg-orange-200 text-orange-800 text-xs font-semibold rounded">⏳ En attente</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          
+                          {request.initialPayment && request.initialPayment.status === 'en_attente' && (
+                            <div className="mt-4 pt-4 border-t border-orange-200">
+                              <p className="text-sm text-gray-700">
+                                <strong>Paiement initial:</strong> <span className="text-orange-700 font-semibold">{formatPrice(request.initialPayment.amount)}</span> en attente
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Section 3.5 - Paiements initiaux en attente */}
+              {dashboardData.pendingInitialPayments && dashboardData.pendingInitialPayments.length > 0 && (
+                <div className="card p-6 mb-8 border-2 border-blue-200 bg-blue-50">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-2xl font-bold flex items-center text-blue-900">
+                      <span className="mr-3 text-3xl">💳</span>
+                      Paiements initiaux en attente
+                    </h2>
+                    <span className="text-sm font-semibold text-blue-700 bg-blue-200 px-3 py-1 rounded-full">
+                      {dashboardData.stats.pendingInitialPayments || 0} paiement{dashboardData.stats.pendingInitialPayments !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    {dashboardData.pendingInitialPayments.map((request) => (
+                      <div key={request._id} className="bg-white rounded-lg p-5 border-2 border-blue-300 shadow-md">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <h3 className="font-bold text-lg text-gray-900 mb-2">
+                              {request.type === 'location' ? '📍 Location' : '🏠 Achat'} - Unité {request.unit?.unitNumber}
+                            </h3>
+                            <div className="text-sm text-gray-600 space-y-1">
+                              <p><strong>Demandeur:</strong> {request.createdBy?.firstName} {request.createdBy?.lastName}</p>
+                              <p><strong>Montant:</strong> <span className="text-blue-700 font-semibold text-lg">{formatPrice(request.initialPayment?.amount)}</span></p>
+                              <p><strong>Statut:</strong> <span className="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs font-semibold">En attente de paiement</span></p>
+                            </div>
+                          </div>
+                          <Link
+                            href={`/proprietaire/requests/${request._id}`}
+                            className="ml-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm"
+                          >
+                            Voir détails →
+                          </Link>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Section 3 - Candidatures & Locations */}
+              {dashboardData.applications && dashboardData.applications.length > 0 && (
+                <div className="card p-6 mb-8">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-2xl font-bold flex items-center">
+                      <span className="mr-3 text-3xl">👤</span>
+                      Candidatures & Locations
+                    </h2>
+                    <span className="text-sm text-gray-600">
+                      {dashboardData.applications.filter(a => a.status === 'en_attente').length} en attente
+                    </span>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    {dashboardData.applications
+                      .filter(app => app.status === 'en_attente')
+                      .map((application) => (
+                        <ApplicationCard
+                          key={application._id}
+                          application={application}
+                          onUpdate={loadDashboardData}
+                        />
+                      ))}
+                    
+                    {dashboardData.applications.filter(app => app.status === 'en_attente').length === 0 && (
+                      <p className="text-center py-8 text-gray-500">Aucune candidature en attente</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Section 3.6 - Paiements en retard */}
+              {dashboardData.overduePayments && dashboardData.overduePayments.length > 0 && (
+                <div className="card p-6 mb-8 border-2 border-red-200 bg-red-50">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-2xl font-bold flex items-center text-red-900">
+                      <span className="mr-3 text-3xl">⚠️</span>
+                      Paiements en retard
+                    </h2>
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        console.log('[DASHBOARD] Clic sur bouton "Voir tout" - Navigation vers paiements en retard');
+                        // Utiliser window.location.href directement pour forcer la navigation
+                        window.location.href = '/payments/proprietaire?status=en_retard';
+                      }}
+                      className="text-red-600 hover:text-red-700 font-medium text-sm cursor-pointer"
+                    >
+                      Voir tout →
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    {dashboardData.overduePayments.slice(0, 10).map((payment) => (
+                      <div key={payment.id || payment._id} className="bg-white rounded-lg p-4 border-l-4 border-red-500 shadow-sm">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-2">
+                              <span className="text-2xl">⚠️</span>
+                              <div>
+                                <p className="font-semibold text-lg text-red-900">
+                                  {formatPrice(payment.amount)}
+                                </p>
+                                <p className="text-sm text-gray-600">
+                                  {payment.payer?.firstName} {payment.payer?.lastName} • Unité {payment.unit?.unitNumber}
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                  Échéance: {formatDate(payment.dueDate)}
+                                </p>
+                                {payment.dueDate && (
+                                  <p className="text-xs text-red-600 font-semibold mt-1">
+                                    En retard depuis {Math.floor((new Date().getTime() - new Date(payment.dueDate).getTime()) / (1000 * 60 * 60 * 24))} jour(s)
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex flex-col items-end gap-2">
+                            <span className="px-3 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-800">
+                              En retard
+                            </span>
+                            <Link 
+                              href={`/payments/${payment.id || payment._id}`}
+                              className="text-red-600 hover:text-red-700 font-medium text-sm"
+                            >
+                              Voir transaction →
+                            </Link>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Section 4 - Paiements reçus */}
+              <div className="card p-6 mb-8">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-2xl font-bold flex items-center">
+                    <span className="mr-3 text-3xl">💵</span>
+                    Paiements reçus
+                  </h2>
+                  <Link href="/payments/proprietaire" className="text-primary-600 hover:text-primary-700 font-medium text-sm">
+                    Voir tout →
+                  </Link>
+                </div>
+                
+                {dashboardData.receivedPayments && dashboardData.receivedPayments.length > 0 ? (
+                  <div className="space-y-3">
+                    {dashboardData.receivedPayments.slice(0, 10).map((payment) => (
+                      <div key={payment.id || payment._id} className="bg-green-50 rounded-lg p-4 border-l-4 border-green-500">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-2">
+                              <span className="text-2xl">✅</span>
+                              <div>
+                                <p className="font-semibold text-lg">
+                                  {formatPrice(payment.amount)}
+                                </p>
+                                <p className="text-sm text-gray-600">
+                                  {payment.payer?.firstName} {payment.payer?.lastName} • Unité {payment.unit?.unitNumber}
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                  Reçu le: {formatDate(payment.paidDate || payment.paidAt)}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex flex-col items-end gap-2">
+                            <span className="px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">
+                              Payé
+                            </span>
+                            <Link 
+                              href={`/payments/${payment.id || payment._id}`}
+                              className="text-primary-600 hover:text-primary-700 font-medium text-sm"
+                            >
+                              Voir transaction →
+                            </Link>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-center py-8 text-gray-500">Aucun paiement reçu pour le moment</p>
+                )}
+              </div>
+            </>
+          ) : !loading && (
+            <div className="card p-12 text-center">
+              <div className="text-6xl mb-4">📊</div>
+              <h2 className="text-2xl font-bold mb-2">Aucune donnée disponible</h2>
+              <p className="text-gray-600 mb-6">
+                Impossible de charger les données du tableau de bord. Veuillez réessayer plus tard.
+              </p>
+              <div className="space-y-4">
+                <button onClick={() => {
+                  setLoading(true)
+                  loadDashboardData()
+                }} className="btn-primary">
+                  Réessayer
+                </button>
+                <div className="mt-4">
+                  <p className="text-sm text-gray-500 mb-2">Vérifiez que :</p>
+                  <ul className="text-sm text-gray-500 text-left max-w-md mx-auto space-y-1">
+                    <li>• Vous êtes bien connecté</li>
+                    <li>• Le serveur backend est démarré sur le port 5000</li>
+                    <li>• Votre connexion internet fonctionne</li>
+                    <li>• Vous avez le rôle "proprietaire"</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      <Footer />
+    </ProtectedRoute>
+  )
+}

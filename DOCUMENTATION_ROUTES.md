@@ -1,0 +1,411 @@
+# Documentation Complète des Routes - MonCondo+
+
+**Date de création** : $(date)  
+**Version** : 1.0.0  
+**Projet** : MonCondo+ - Application de gestion immobilière
+
+---
+
+## 📋 Table des matières
+
+1. [Routes Backend API](#routes-backend-api)
+2. [Routes Frontend (Pages Next.js)](#routes-frontend-pages-nextjs)
+3. [Appels API Frontend](#appels-api-frontend)
+4. [Légende des permissions](#légende-des-permissions)
+
+---
+
+## 🔧 Routes Backend API
+
+**Base URL** : `http://localhost:5000/api` (développement)  
+**Production** : Variable d'environnement `NEXT_PUBLIC_API_URL`
+
+---
+
+### 1. 🔐 Authentification (`/api/auth`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `POST` | `/api/auth/register` | Inscription d'un nouvel utilisateur | ❌ Publique | Tous |
+| `POST` | `/api/auth/login` | Connexion (login) | ❌ Publique | Tous |
+| `GET` | `/api/auth/me` | Obtenir les informations de l'utilisateur connecté | ✅ Token requis | Tous |
+| `POST` | `/api/auth/forgotpassword` | Demander la réinitialisation du mot de passe | ❌ Publique | Tous |
+| `PUT` | `/api/auth/resetpassword/:resettoken` | Réinitialiser le mot de passe | ❌ Publique (avec token reset) | Tous |
+| `PUT` | `/api/auth/updatepassword` | Mettre à jour le mot de passe | ✅ Token requis | Tous |
+
+**Fichier** : `backend/routes/authRoutes.js`
+
+---
+
+### 2. 👥 Utilisateurs (`/api/users`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `GET` | `/api/users` | Liste tous les utilisateurs | ✅ Token requis | Admin uniquement |
+| `POST` | `/api/users` | Créer un nouvel utilisateur | ✅ Token requis | Admin uniquement |
+| `GET` | `/api/users/:id` | Obtenir un utilisateur par ID | ✅ Token requis | Tous (propre compte ou admin) |
+| `PUT` | `/api/users/:id` | Mettre à jour un utilisateur | ✅ Token requis | Tous (propre compte ou admin) |
+| `DELETE` | `/api/users/:id` | Supprimer un utilisateur | ✅ Token requis | Admin uniquement |
+| `PUT` | `/api/users/:id/promote` | Promouvoir un utilisateur en propriétaire | ✅ Token requis | Admin uniquement |
+
+**Fichier** : `backend/routes/userRoutes.js`
+
+---
+
+### 3. 🏢 Immeubles (`/api/buildings`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `GET` | `/api/buildings` | Liste tous les immeubles | ✅ Token requis | Tous (authentifiés) |
+| `POST` | `/api/buildings` | Créer un nouvel immeuble | ✅ Token requis | Admin uniquement |
+| `GET` | `/api/buildings/:id` | Obtenir un immeuble par ID | ✅ Token requis | Tous (authentifiés) |
+| `PUT` | `/api/buildings/:id` | Mettre à jour un immeuble | ✅ Token requis | Admin uniquement |
+| `DELETE` | `/api/buildings/:id` | Supprimer un immeuble | ✅ Token requis | Admin uniquement |
+| `GET` | `/api/buildings/stats` | Statistiques des immeubles | ✅ Token requis | Admin uniquement |
+
+**Fichier** : `backend/routes/buildingRoutes.js`
+
+---
+
+### 4. 🏠 Unités (`/api/units`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `GET` | `/api/units/available` | Liste les unités disponibles (publique) | ⚠️ Optionnelle | Publique (optionnelle) |
+| `GET` | `/api/units` | Liste toutes les unités | ✅ Token requis | Tous (authentifiés) |
+| `POST` | `/api/units` | Créer une nouvelle unité | ✅ Token requis | Admin uniquement |
+| `GET` | `/api/units/nouvelles` | Liste les unités récentes | ✅ Token requis | Tous (authentifiés) |
+| `GET` | `/api/units/stats` | Statistiques des unités | ✅ Token requis | Admin uniquement |
+| `GET` | `/api/units/:id` | Obtenir une unité par ID | ✅ Token requis | Tous (authentifiés) |
+| `PUT` | `/api/units/:id` | Mettre à jour une unité | ✅ Token requis | Admin ou propriétaire |
+| `DELETE` | `/api/units/:id` | Supprimer une unité | ✅ Token requis | Admin uniquement |
+| `PUT` | `/api/units/:id/assign-owner` | Assigner un propriétaire à une unité | ✅ Token requis | Admin uniquement |
+| `PUT` | `/api/units/:id/assign-tenant` | Assigner un locataire à une unité | ✅ Token requis | Admin ou propriétaire |
+| `PUT` | `/api/units/:id/release` | Libérer une unité (retirer locataire) | ✅ Token requis | Admin ou propriétaire |
+
+**Fichier** : `backend/routes/unitRoutes.js`
+
+---
+
+### 5. 📝 Demandes/Requêtes (`/api/requests`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `GET` | `/api/requests` | Liste toutes les demandes | ✅ Token requis | Tous (filtrées par utilisateur) |
+| `POST` | `/api/requests` | Créer une nouvelle demande | ✅ Token requis | Tous (authentifiés) |
+| `POST` | `/api/requests/visitor-request` | Créer une demande visiteur | ✅ Token requis | Tous (authentifiés) |
+| `GET` | `/api/requests/:id` | Obtenir une demande par ID | ✅ Token requis | Tous (propre demande ou admin) |
+| `PUT` | `/api/requests/:id` | Mettre à jour une demande | ✅ Token requis | Tous (propre demande ou admin) |
+| `DELETE` | `/api/requests/:id` | Supprimer une demande | ✅ Token requis | Tous (propre demande ou admin) |
+| `PUT` | `/api/requests/:id/status` | Mettre à jour le statut d'une demande | ✅ Token requis | Admin uniquement |
+| `PUT` | `/api/requests/:id/assign` | Assigner une demande à un admin | ✅ Token requis | Admin uniquement |
+| `PUT` | `/api/requests/:id/accept` | Accepter une demande | ✅ Token requis | Admin uniquement |
+| `PUT` | `/api/requests/:id/reject` | Rejeter une demande | ✅ Token requis | Admin uniquement |
+| `POST` | `/api/requests/:id/notes` | Ajouter une note admin à une demande | ✅ Token requis | Admin uniquement |
+| `PUT` | `/api/requests/:id/assign-unit` | Assigner une unité à une demande | ✅ Token requis | Admin uniquement |
+| `GET` | `/api/requests/:id/payment-status` | Obtenir le statut du paiement initial | ✅ Token requis | Tous (propre demande ou admin) |
+| `POST` | `/api/requests/:id/payment/initiate` | Initier le paiement initial | ✅ Token requis | Propriétaire |
+| `PUT` | `/api/requests/:id/payment/validate` | Valider un paiement initial | ✅ Token requis | Admin uniquement |
+| `PUT` | `/api/requests/:id/documents/:docId/sign` | Signer un document | ✅ Token requis | Tous (propre demande) |
+| `GET` | `/api/requests/:id/documents/:docId/download` | Télécharger un document | ✅ Token requis | Tous (propre demande ou admin) |
+
+**Fichier** : `backend/routes/requestRoutes.js`
+
+---
+
+### 6. 💰 Paiements (`/api/payments`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `GET` | `/api/payments` | Liste tous les paiements | ✅ Token requis | Tous (filtrés par utilisateur) |
+| `POST` | `/api/payments` | Créer un nouveau paiement | ✅ Token requis | Admin, Propriétaire, Locataire |
+| `GET` | `/api/payments/:id` | Obtenir un paiement par ID | ✅ Token requis | Tous (propre paiement ou admin) |
+| `PUT` | `/api/payments/:id` | Mettre à jour un paiement | ✅ Token requis | Admin uniquement |
+| `DELETE` | `/api/payments/:id` | Supprimer un paiement | ✅ Token requis | Admin uniquement |
+| `POST` | `/api/payments/:id/process` | Traiter un paiement | ✅ Token requis | Tous (propre paiement ou admin) |
+| `POST` | `/api/payments/:id/stripe/create-intent` | Créer une intention Stripe | ✅ Token requis | Tous (propre paiement) |
+| `POST` | `/api/payments/:id/stripe/confirm` | Confirmer un paiement Stripe | ✅ Token requis | Tous (propre paiement) |
+| `POST` | `/api/payments/:id/interac/instructions` | Créer des instructions Interac | ✅ Token requis | Tous (propre paiement) |
+| `POST` | `/api/payments/:id/bank-transfer/instructions` | Créer des instructions virement bancaire | ✅ Token requis | Tous (propre paiement) |
+| `GET` | `/api/payments/:id/receipt` | Générer un reçu | ✅ Token requis | Tous (propre paiement ou admin) |
+| `GET` | `/api/payments/stats` | Statistiques des paiements | ✅ Token requis | Tous (filtrées par utilisateur) |
+| `GET` | `/api/payments/next-due` | Prochain paiement dû (locataire) | ✅ Token requis | Locataire |
+| `GET` | `/api/payments/overdue/all` | Liste tous les paiements en retard | ✅ Token requis | Admin uniquement |
+| `GET` | `/api/payments/report/pdf` | Générer un rapport PDF | ✅ Token requis | Admin uniquement |
+| `GET` | `/api/payments/report/excel` | Générer un rapport Excel | ✅ Token requis | Admin uniquement |
+
+**Fichier** : `backend/routes/paymentRoutes.js`
+
+---
+
+### 7. 💬 Messages (`/api/messages`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `GET` | `/api/messages` | Liste tous les messages | ✅ Token requis | Tous (authentifiés) |
+| `POST` | `/api/messages` | Créer un nouveau message | ✅ Token requis | Tous (authentifiés) |
+| `GET` | `/api/messages/unread` | Liste les messages non lus | ✅ Token requis | Tous (authentifiés) |
+| `GET` | `/api/messages/unread/count` | Compter les messages non lus | ✅ Token requis | Tous (authentifiés) |
+| `GET` | `/api/messages/conversation/:userId` | Obtenir une conversation avec un utilisateur | ✅ Token requis | Tous (authentifiés) |
+| `GET` | `/api/messages/:id` | Obtenir un message par ID | ✅ Token requis | Tous (authentifiés) |
+| `PUT` | `/api/messages/:id` | Mettre à jour un message | ✅ Token requis | Tous (propre message ou admin) |
+| `DELETE` | `/api/messages/:id` | Supprimer un message | ✅ Token requis | Tous (propre message ou admin) |
+| `PUT` | `/api/messages/:id/read` | Marquer un message comme lu | ✅ Token requis | Tous (authentifiés) |
+
+**Fichier** : `backend/routes/messageRoutes.js`
+
+---
+
+### 8. 📄 Documents (`/api/documents`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `GET` | `/api/documents` | Liste tous les documents | ✅ Token requis | Tous (filtrés par utilisateur) |
+| `POST` | `/api/documents` | Uploader un document | ✅ Token requis | Tous (authentifiés) |
+| `GET` | `/api/documents/:id` | Obtenir un document par ID | ✅ Token requis | Tous (propre document ou admin) |
+| `PUT` | `/api/documents/:id` | Mettre à jour un document | ✅ Token requis | Tous (propre document ou admin) |
+| `DELETE` | `/api/documents/:id` | Supprimer un document | ✅ Token requis | Tous (propre document ou admin) |
+| `GET` | `/api/documents/:id/download` | Télécharger un document | ✅ Token requis | Tous (propre document ou admin) |
+
+**Fichier** : `backend/routes/documentRoutes.js`
+
+---
+
+### 9. 🔔 Notifications (`/api/notifications`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `GET` | `/api/notifications` | Liste toutes les notifications | ✅ Token requis | Tous (filtrées par utilisateur) |
+| `GET` | `/api/notifications/export/:format` | Exporter l'historique des notifications | ✅ Token requis | Tous (authentifiés) |
+| `PATCH` | `/api/notifications/read/all` | Marquer toutes les notifications comme lues | ✅ Token requis | Tous (authentifiés) |
+| `PATCH` | `/api/notifications/read/:id` | Marquer une notification comme lue | ✅ Token requis | Tous (authentifiés) |
+| `DELETE` | `/api/notifications/:id` | Supprimer une notification | ✅ Token requis | Tous (authentifiés) |
+
+**Fichier** : `backend/routes/notificationRoutes.js`
+
+---
+
+### 10. 💬 Conversations (`/api/conversations`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `GET` | `/api/conversations` | Liste toutes les conversations | ✅ Token requis | Tous (authentifiés) |
+| `GET` | `/api/conversations/:id` | Obtenir une conversation par ID | ✅ Token requis | Tous (authentifiés) |
+| `GET` | `/api/conversations/contacts` | Liste les contacts | ✅ Token requis | Tous (authentifiés) |
+| `GET` | `/api/conversations/:id/messages` | Obtenir les messages d'une conversation | ✅ Token requis | Tous (authentifiés) |
+| `POST` | `/api/conversations/direct` | Créer ou obtenir une conversation directe | ✅ Token requis | Tous (authentifiés) |
+| `POST` | `/api/conversations/unit` | Créer une conversation liée à une unité | ✅ Token requis | Tous (authentifiés) |
+| `PUT` | `/api/conversations/:id/archive` | Archiver une conversation | ✅ Token requis | Tous (authentifiés) |
+
+**Fichier** : `backend/routes/conversationRoutes.js`
+
+---
+
+### 11. 📤 Upload (`/api/upload`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `POST` | `/api/upload/messages` | Uploader des fichiers pour les messages | ✅ Token requis | Tous (authentifiés) |
+
+**Fichier** : `backend/routes/uploadRoutes.js`
+
+---
+
+### 12. 📊 Tableau de bord (`/api/dashboard`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `GET` | `/api/dashboard/admin/dashboard` | Dashboard admin | ✅ Token requis | Admin uniquement |
+| `GET` | `/api/dashboard/admin/users` | Liste des utilisateurs (admin) | ✅ Token requis | Admin uniquement |
+| `GET` | `/api/dashboard/admin/stats` | Statistiques globales (admin) | ✅ Token requis | Admin uniquement |
+| `GET` | `/api/dashboard/proprietaire/dashboard` | Dashboard propriétaire | ✅ Token requis | Propriétaire uniquement |
+| `GET` | `/api/dashboard/proprietaire/my-units` | Mes unités (propriétaire) | ✅ Token requis | Propriétaire uniquement |
+| `GET` | `/api/dashboard/locataire/dashboard` | Dashboard locataire | ✅ Token requis | Locataire uniquement |
+| `GET` | `/api/dashboard/locataire/my-unit` | Mon unité (locataire) | ✅ Token requis | Locataire uniquement |
+| `GET` | `/api/dashboard/dashboard` | Dashboard général | ✅ Token requis | Admin, Propriétaire, Locataire |
+| `GET` | `/api/dashboard/me` | Informations utilisateur actuel | ✅ Token requis | Tous (authentifiés) |
+
+**Fichier** : `backend/routes/dashboardRoutes.js`
+
+---
+
+### 13. 🏠 API principale (`/api`)
+
+| Méthode | Route | Description | Authentification | Rôles |
+|---------|-------|-------------|------------------|-------|
+| `GET` | `/api` | Page d'accueil de l'API | ❌ Publique | Tous |
+| `GET` | `/api/health` | Health check du serveur | ❌ Publique | Tous |
+
+**Fichier** : `backend/routes/index.js`, `backend/server.js`
+
+---
+
+## 🖥️ Routes Frontend (Pages Next.js)
+
+**Base URL** : `http://localhost:3000` (développement)
+
+---
+
+### Pages Publiques
+
+| Route | Page | Description | Composant |
+|-------|------|-------------|-----------|
+| `/` | Accueil | Page d'accueil publique | `pages/index.tsx` |
+| `/login` | Connexion | Page de connexion | `pages/login.tsx` |
+| `/404` | Erreur 404 | Page d'erreur 404 | `pages/404.tsx` |
+| `/unauthorized` | Non autorisé | Page d'accès non autorisé | `pages/unauthorized.tsx` |
+| `/contact` | Contact | Page de contact | `pages/contact.tsx` |
+| `/services` | Services | Page des services | `pages/services.tsx` |
+| `/community` | Communauté | Page communauté | `pages/community.tsx` |
+| `/maintenance` | Maintenance | Page maintenance | `pages/maintenance.tsx` |
+
+---
+
+### Pages Admin
+
+| Route | Page | Description | Composant | Rôle requis |
+|-------|------|-------------|-----------|-------------|
+| `/admin/dashboard` | Dashboard Admin | Tableau de bord administrateur | `pages/dashboard/admin.tsx` | Admin |
+| `/admin/buildings` | Gestion Immeubles | Gestion des immeubles | `pages/admin/buildings.tsx` | Admin |
+| `/admin/units` | Gestion Unités | Gestion des unités | `pages/admin/units.tsx` | Admin |
+| `/admin/users` | Gestion Utilisateurs | Gestion des utilisateurs | `pages/admin/users.tsx` | Admin |
+| `/admin/requests` | Gestion Demandes | Gestion des demandes | `pages/admin/requests.tsx` | Admin |
+| `/admin/requests/[id]` | Détails Demande Admin | Détails d'une demande (admin) | `pages/admin/requests/[id].tsx` | Admin |
+| `/admin/requests/[id]/edit` | Éditer Demande Admin | Éditer une demande (admin) | `pages/admin/requests/[id]/edit.tsx` | Admin |
+
+---
+
+### Pages Propriétaire
+
+| Route | Page | Description | Composant | Rôle requis |
+|-------|------|-------------|-----------|-------------|
+| `/dashboard/proprietaire` | Dashboard Propriétaire | Tableau de bord propriétaire | `pages/dashboard/proprietaire.tsx` | Propriétaire |
+| `/proprietaire/mes-unites` | Mes Unités | Liste des unités du propriétaire | `pages/proprietaire/mes-unites.tsx` | Propriétaire |
+| `/proprietaire/consult-units` | Consulter Unités | Consulter les unités | `pages/proprietaire/consult-units.tsx` | Propriétaire |
+| `/proprietaire/services` | Services Propriétaire | Services pour propriétaire | `pages/proprietaire/services.tsx` | Propriétaire |
+| `/proprietaire/requests/[id]` | Détails Demande Propriétaire | Détails d'une demande | `pages/proprietaire/requests/[id].tsx` | Propriétaire |
+
+---
+
+### Pages Locataire
+
+| Route | Page | Description | Composant | Rôle requis |
+|-------|------|-------------|-----------|-------------|
+| `/dashboard/locataire` | Dashboard Locataire | Tableau de bord locataire | `pages/dashboard/locataire.tsx` | Locataire |
+| `/locataire/services` | Services Locataire | Services pour locataire | `pages/locataire/services.tsx` | Locataire |
+| `/locataire/profile` | Profil Locataire | Profil du locataire | `pages/locataire/profile.tsx` | Locataire |
+| `/locataire/settings` | Paramètres Locataire | Paramètres du locataire | `pages/locataire/settings.tsx` | Locataire |
+| `/locataire/requests/[id]` | Détails Demande Locataire | Détails d'une demande | `pages/locataire/requests/[id].tsx` | Locataire |
+
+---
+
+### Pages Communes (Multi-rôles)
+
+| Route | Page | Description | Composant | Rôle requis |
+|-------|------|-------------|-----------|-------------|
+| `/dashboard` | Dashboard Général | Dashboard général (redirige selon rôle) | `pages/dashboard/index.tsx` | Tous |
+| `/dashboard/admin` | Dashboard Admin (alias) | Alias vers dashboard admin | `pages/dashboard/admin.tsx` | Admin |
+| `/units` | Unités | Liste des unités disponibles | `pages/units.tsx` | Tous (authentifiés) |
+| `/units/[id]` | Détails Unité | Détails d'une unité | `pages/units/[id].tsx` | Tous (authentifiés) |
+| `/buildings` | Immeubles (redirect) | Redirige vers `/admin/buildings` | `pages/buildings.tsx` | Admin |
+| `/buildings/[id]` | Détails Immeuble | Détails d'un immeuble | `pages/buildings/[id].tsx` | Tous (authentifiés) |
+| `/buildings/[id]/edit` | Éditer Immeuble | Éditer un immeuble | `pages/buildings/[id]/edit.tsx` | Admin |
+| `/documents` | Documents | Gestion des documents | `pages/documents.tsx` | Tous (authentifiés) |
+| `/messages` | Messages | Messagerie | `pages/messages.tsx` | Tous (authentifiés) |
+| `/notifications` | Notifications | Centre de notifications | `pages/notifications.tsx` | Tous (authentifiés) |
+| `/request` | Nouvelle Demande | Créer une nouvelle demande | `pages/request.tsx` | Tous (authentifiés) |
+| `/analytics` | Analytics | Statistiques et analyses | `pages/analytics.tsx` | Tous (authentifiés) |
+
+---
+
+### Pages Paiements
+
+| Route | Page | Description | Composant | Rôle requis |
+|-------|------|-------------|-----------|-------------|
+| `/payments` | Paiements | Liste des paiements | `pages/payments/index.tsx` | Tous (authentifiés) |
+| `/payments/admin` | Paiements Admin | Gestion des paiements (admin) | `pages/payments/admin.tsx` | Admin |
+| `/payments/proprietaire` | Paiements Propriétaire | Paiements reçus (propriétaire) | `pages/payments/proprietaire.tsx` | Propriétaire |
+| `/payments/locataire` | Paiements Locataire | Mes paiements (locataire) | `pages/payments/locataire.tsx` | Locataire |
+| `/payments/new` | Nouveau Paiement | Créer un nouveau paiement | `pages/payments/new.tsx` | Tous (authentifiés) |
+| `/payments/[id]` | Détails Paiement | Détails d'un paiement | `pages/payments/[id].tsx` | Tous (authentifiés) |
+| `/payments/[id]/pay` | Payer | Page de paiement | `pages/payments/[id]/pay.tsx` | Tous (authentifiés) |
+| `/payments/[id]/success` | Succès Paiement | Confirmation de paiement | `pages/payments/[id]/success.tsx` | Tous (authentifiés) |
+
+---
+
+## 🔌 Appels API Frontend
+
+### Services et Hooks
+
+#### `frontend/services/realEstateService.ts`
+- `getAllBuildings()` → `GET /api/buildings`
+- `getBuilding(id)` → `GET /api/buildings/:id`
+- `getAllUnits()` → `GET /api/units`
+- `getUnit(id)` → `GET /api/units/:id`
+- `getAvailableUnits()` → `GET /api/units/available`
+- `getGlobalStats()` → `GET /api/dashboard/admin/stats`
+- `getUnitsStats()` → `GET /api/units/stats`
+- `getBuildingsStats()` → `GET /api/buildings/stats`
+
+#### `frontend/hooks/useGlobalStats.ts`
+- Utilise `GET /api/dashboard/admin/stats` pour les statistiques globales
+
+#### `frontend/hooks/useRealEstateData.ts`
+- Utilise `realEstateService` pour charger toutes les données immobilières
+
+#### `frontend/utils/axiosInstances.ts`
+- **`authenticatedAxios`** : Instance axios avec token automatique
+  - Base URL : `http://localhost:5000/api`
+  - Ajoute automatiquement `Authorization: Bearer <token>`
+  - Gère les erreurs 401 (redirection vers login)
+
+- **`publicAxios`** : Instance axios sans authentification
+  - Base URL : `http://localhost:5000/api`
+  - Utilisé pour les routes publiques
+
+---
+
+## 📝 Légende des permissions
+
+| Symbole | Signification |
+|---------|---------------|
+| ✅ Token requis | Route protégée nécessitant un token JWT |
+| ❌ Publique | Route accessible sans authentification |
+| ⚠️ Optionnelle | Route accessible sans token, mais utilise le token si disponible |
+| Admin uniquement | Route accessible uniquement aux administrateurs |
+| Propriétaire uniquement | Route accessible uniquement aux propriétaires |
+| Locataire uniquement | Route accessible uniquement aux locataires |
+| Tous (authentifiés) | Route accessible à tous les utilisateurs connectés |
+| Tous (filtrées) | Route accessible à tous, mais les résultats sont filtrés par utilisateur |
+
+---
+
+## 📌 Notes importantes
+
+1. **Ordre des routes** : L'ordre de montage des routes dans `server.js` est critique. Les routes spécifiques doivent être définies avant les routes génériques (`/:id`).
+
+2. **Authentification** : Toutes les routes protégées utilisent le middleware `protect` qui vérifie la validité du token JWT.
+
+3. **Autorisation** : Les routes avec restriction de rôle utilisent le middleware `roleAuth('role1', 'role2', ...)`.
+
+4. **CORS** : Les routes backend acceptent les requêtes depuis `http://localhost:3000` et `http://localhost:3001`.
+
+5. **Socket.io** : Les routes `buildings` émettent des événements Socket.io lors des mises à jour (`building:updated`, `unit:updated`, `stats:updated`).
+
+6. **Upload** : Les routes d'upload utilisent le middleware `upload` (Multer) pour gérer les fichiers.
+
+7. **Health Check** : La route `/api/health` est utilisée pour vérifier que le backend est opérationnel.
+
+---
+
+## 📚 Fichiers de configuration
+
+- **Backend** : `backend/server.js` - Montage de toutes les routes
+- **Frontend** : `frontend/utils/axiosInstances.ts` - Configuration des instances axios
+- **Frontend** : `frontend/services/realEstateService.ts` - Service centralisé pour les données immobilières
+
+---
+
+**Document généré automatiquement**  
+**Dernière mise à jour** : $(date)
+
