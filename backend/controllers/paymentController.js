@@ -81,10 +81,26 @@ exports.getPayments = async (req, res) => {
       data: paginatedPayments
     });
   } catch (error) {
-    console.error('[PAYMENT] Erreur getPayments:', error);
+    console.error('[PAYMENT] ❌ Erreur getPayments:', error);
+    console.error('[PAYMENT] Stack:', error.stack);
+    console.error('[PAYMENT] User:', req.user?._id, req.user?.role);
+    console.error('[PAYMENT] Query:', req.query);
+    
+    // Vérifier si c'est une erreur de connexion MongoDB
+    if (error.name === 'MongoNetworkError' || error.message?.includes('MongoServerError') || error.message?.includes('connection')) {
+      return res.status(503).json({
+        success: false,
+        message: 'Erreur de connexion à la base de données. Le serveur est en cours d\'exécution mais n\'a pas pu traiter votre demande. Veuillez vérifier la connexion MongoDB.'
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      message: error.message
+      message: error.message || 'Erreur serveur. Le serveur est en cours d\'exécution mais n\'a pas pu traiter votre demande.',
+      ...(process.env.NODE_ENV === 'development' && { 
+        error: error.name,
+        stack: error.stack
+      })
     });
   }
 };
@@ -438,6 +454,133 @@ exports.createPayment = async (req, res) => {
       .populate('recipient', 'firstName lastName email role')
       .populate('requestId', 'title type status');
 
+    // Envoyer une notification au client (payeur) si le paiement a été créé par un admin
+    try {
+      const Notification = require('../models/Notification');
+      const payerUser = await User.findById(finalPayer || finalPayerFromBody);
+      
+      if (payerUser && req.user.role === 'admin') {
+        // Si le paiement est lié à une demande, personnaliser le message
+        let notificationTitle = '💳 Nouvelle demande de paiement';
+        let notificationContent = `Une demande de paiement de ${amount} $CAD a été créée pour vous. Veuillez consulter votre tableau de bord pour effectuer le paiement.`;
+        
+        if (requestId) {
+          const Request = require('../models/Request');
+          const request = await Request.findById(requestId)
+            .populate('unit', 'unitNumber');
+          
+          if (request) {
+            const typeLabel = request.type === 'location' ? 'location' : request.type === 'achat' ? 'achat' : 'demande';
+            notificationTitle = `💳 Demande de paiement - ${typeLabel === 'location' ? 'Location' : 'Achat'}`;
+            notificationContent = `Une demande de paiement de ${amount} $CAD a été créée pour votre demande de ${typeLabel}`;
+            if (request.unit) {
+              notificationContent += ` - Unité ${request.unit.unitNumber}`;
+            }
+            notificationContent += `. Le statut est maintenant "En attente de paiement par le client". Veuillez consulter votre tableau de bord ou la page de la demande pour effectuer le paiement.`;
+          }
+        }
+        
+        await Notification.create({
+          user: payerUser._id,
+          type: 'payment',
+          title: notificationTitle,
+          content: notificationContent,
+          sender: req.user._id,
+          payment: payment._id,
+          unit: populatedPayment.unit?._id || populatedPayment.unit,
+          building: populatedPayment.building?._id || populatedPayment.building,
+          request: requestId || undefined,
+          isRead: false
+        });
+        
+        console.log('[CREATE_PAYMENT] ✅ Notification envoyée au client:', payerUser.email);
+      }
+      
+      // Notifier l'admin si le paiement a été créé par un propriétaire ou locataire
+      if (req.user.role !== 'admin') {
+        const adminUsers = await User.find({ role: 'admin', isActive: true });
+        for (const admin of adminUsers) {
+          await Notification.create({
+            user: admin._id,
+            type: 'payment',
+            title: '💳 Nouveau paiement créé',
+            content: `Un paiement de ${amount} $CAD a été créé par ${req.user.firstName} ${req.user.lastName}.`,
+            sender: req.user._id,
+            payment: payment._id,
+            unit: populatedPayment.unit?._id || populatedPayment.unit,
+            building: populatedPayment.building?._id || populatedPayment.building,
+            isRead: false
+          });
+        }
+        console.log('[CREATE_PAYMENT] ✅ Notification envoyée aux admins');
+      }
+    } catch (error) {
+      console.error('[CREATE_PAYMENT] Erreur notification (non bloquante):', error);
+      // Ne pas faire échouer la création du paiement si la notification échoue
+    }
+
+    // Synchroniser toutes les vues après la création du paiement via le service global
+    // Si le paiement est lié à une demande, synchroniser aussi la demande
+    try {
+      const { syncPaymentGlobally, syncPaymentAndRequestGlobally } = require('../services/globalSyncService');
+      if (requestId) {
+        // Synchroniser à la fois le paiement et la demande
+        await syncPaymentAndRequestGlobally(payment._id, requestId);
+        console.log('[CREATE_PAYMENT] ✅ Synchronisation globale paiement + demande terminée');
+        
+        // Émettre un événement Socket.io pour la création de paiement lié à une demande
+        // Récupérer io depuis app.locals ou global
+        const io = req.app.get('io') || (typeof global !== 'undefined' ? global.io : null);
+        if (io) {
+          // Préparer les données de l'événement avec toutes les informations nécessaires
+          // Normaliser le statut pour s'assurer qu'il est 'en_attente'
+          let normalizedStatus = payment.status || 'en_attente'
+          if (normalizedStatus === 'pending' || normalizedStatus === 'payment_pending' || normalizedStatus === 'pending_payment' || normalizedStatus === 'awaiting_payment') {
+            normalizedStatus = 'en_attente'
+          }
+          
+          const eventData = {
+            paymentId: payment._id,
+            requestId: requestId,
+            amount: payment.amount,
+            status: normalizedStatus, // Utiliser le statut normalisé
+            description: payment.description,
+            dueDate: payment.dueDate,
+            type: payment.type,
+            createdAt: payment.createdAt || new Date().toISOString(),
+            timestamp: new Date().toISOString()
+          };
+          
+          // Envoyer à tous les clients connectés
+          io.emit('paymentCreated', eventData);
+          
+          // Envoyer aussi spécifiquement au demandeur si disponible
+          // Utiliser populatedPayment qui a le payer peuplé
+          const payerId = populatedPayment?.payer?._id || populatedPayment?.payer || payment.payer?._id || payment.payer
+          if (payerId) {
+            const payerIdString = payerId.toString()
+            console.log('[CREATE_PAYMENT] 📡 Envoi spécifique au payeur:', payerIdString)
+            io.to(`user_${payerIdString}`).emit('paymentCreated', {
+              ...eventData,
+              forUser: payerIdString
+            });
+          } else {
+            console.warn('[CREATE_PAYMENT] ⚠️  Payeur non trouvé pour l\'envoi spécifique')
+          }
+          
+          console.log('[CREATE_PAYMENT] 📡 Événement Socket.io paymentCreated émis pour requestId:', requestId, 'avec données:', eventData);
+        } else {
+          console.warn('[CREATE_PAYMENT] ⚠️  Socket.io non disponible - événement non émis');
+        }
+      } else {
+        // Synchroniser uniquement le paiement
+        await syncPaymentGlobally(payment._id);
+        console.log('[CREATE_PAYMENT] ✅ Synchronisation globale paiement terminée');
+      }
+    } catch (syncError) {
+      console.error('[CREATE_PAYMENT] ⚠️  Erreur synchronisation (non bloquante):', syncError);
+    }
+
     console.log('[CREATE_PAYMENT] ✅✅✅ PAIEMENT CRÉÉ ET RETOURNÉ ✅✅✅');
     console.log('[CREATE_PAYMENT] Réponse 201 avec données complètes');
 
@@ -760,6 +903,46 @@ exports.processPayment = async (req, res) => {
     );
 
     console.log('[PAYMENT] Paiement traité avec succès:', updatedPayment._id);
+
+    // Synchroniser globalement le paiement et la demande si liée
+    try {
+      const { syncPaymentAndRequestGlobally, syncPaymentGlobally } = require('../services/globalSyncService');
+      if (updatedPayment.requestId) {
+        await syncPaymentAndRequestGlobally(updatedPayment._id, updatedPayment.requestId);
+        console.log('[PROCESS_PAYMENT] ✅ Synchronisation globale paiement + demande terminée');
+        
+        // Émettre un événement Socket.io spécifique pour le paiement payé
+        const io = req.app.get('io') || (typeof global !== 'undefined' ? global.io : null);
+        if (io) {
+          io.emit('paymentPaid', {
+            paymentId: updatedPayment._id,
+            requestId: updatedPayment.requestId,
+            status: 'paye',
+            amount: updatedPayment.amount,
+            paymentMethod: updatedPayment.paymentMethod,
+            transactionId: updatedPayment.transactionId,
+            paidDate: updatedPayment.paidDate,
+            timestamp: new Date().toISOString()
+          });
+          
+          // Émettre aussi un événement de synchronisation globale
+          io.emit('globalSync', {
+            paymentId: updatedPayment._id,
+            requestId: updatedPayment.requestId,
+            type: 'payment',
+            action: 'paid',
+            timestamp: new Date().toISOString()
+          });
+          
+          console.log('[PROCESS_PAYMENT] 📡 Événements Socket.io émis pour paiement payé');
+        }
+      } else {
+        await syncPaymentGlobally(updatedPayment._id);
+        console.log('[PROCESS_PAYMENT] ✅ Synchronisation globale paiement terminée');
+      }
+    } catch (syncError) {
+      console.error('[PROCESS_PAYMENT] ⚠️  Erreur synchronisation (non bloquante):', syncError);
+    }
 
     res.status(200).json({
       success: true,
@@ -1188,42 +1371,103 @@ exports.getOverduePayments = async (req, res) => {
 // ==================== GET PAYMENT STATS ====================
 exports.getPaymentStats = async (req, res) => {
   try {
-    const query = {};
-
-    // Filtres selon le rôle
+    const { calculatePaymentStats } = require('../services/paymentSyncService');
+    
+    // Construire les filtres selon le rôle
+    const filters = {};
     if (req.user.role === 'locataire') {
-      query.payer = req.user._id || req.user.id;
+      filters.payer = req.user._id || req.user.id;
     } else if (req.user.role === 'proprietaire') {
       const userUnits = await Unit.find({
         proprietaire: req.user._id || req.user.id
       }).distinct('_id');
-      query.unit = { $in: userUnits };
+      if (userUnits.length > 0) {
+        filters.unit = { $in: userUnits };
+      } else {
+        // Si le propriétaire n'a pas d'unités, retourner des stats vides
+        return res.status(200).json({
+          success: true,
+          data: {
+            totalPaid: 0,
+            totalPending: 0,
+            totalOverdue: 0,
+            paidCount: 0,
+            pendingCount: 0,
+            overdueCount: 0,
+            totalAmount: 0,
+            paidAmount: 0,
+            pendingAmount: 0,
+            overdueAmount: 0
+          }
+        });
+      }
     }
+    // Admin : pas de filtre, voir tous les paiements
 
-    const [totalPaid, totalPending, totalOverdue, totalAmount] = await Promise.all([
-      Payment.countDocuments({ ...query, status: 'paye' }),
-      Payment.countDocuments({ ...query, status: 'en_attente' }),
-      Payment.countDocuments({ ...query, status: 'en_retard' }),
-      Payment.aggregate([
-        { $match: { ...query, status: 'paye' } },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ])
-    ]);
+    // Utiliser la fonction centralisée pour calculer les statistiques
+    let stats;
+    try {
+      stats = await calculatePaymentStats(filters);
+    } catch (statsError) {
+      console.error('[PAYMENT] Erreur calculatePaymentStats:', statsError);
+      // En cas d'erreur, retourner des stats vides plutôt que de faire échouer la requête
+      stats = {
+        paid: 0,
+        pending: 0,
+        overdue: 0,
+        paidAmount: 0,
+        pendingAmount: 0,
+        overdueAmount: 0
+      };
+    }
 
     res.status(200).json({
       success: true,
       data: {
-        totalPaid,
-        totalPending,
-        totalOverdue,
-        totalAmount: totalAmount[0]?.total || 0
+        totalPaid: stats.paid || 0,
+        totalPending: stats.pending || 0,
+        totalOverdue: stats.overdue || 0,
+        paidCount: stats.paid || 0,
+        pendingCount: stats.pending || 0,
+        overdueCount: stats.overdue || 0,
+        totalAmount: stats.paidAmount || 0,
+        paidAmount: stats.paidAmount || 0,
+        pendingAmount: stats.pendingAmount || 0,
+        overdueAmount: stats.overdueAmount || 0
       }
     });
   } catch (error) {
-    console.error('[PAYMENT] Erreur getPaymentStats:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
+    console.error('[PAYMENT] ❌ Erreur getPaymentStats:', error);
+    console.error('[PAYMENT] Stack:', error.stack);
+    console.error('[PAYMENT] User:', req.user?._id, req.user?.role);
+    
+    // Vérifier si c'est une erreur de connexion MongoDB
+    if (error.name === 'MongoNetworkError' || error.message?.includes('MongoServerError') || error.message?.includes('connection')) {
+      return res.status(503).json({
+        success: false,
+        message: 'Erreur de connexion à la base de données. Le serveur est en cours d\'exécution mais n\'a pas pu traiter votre demande. Veuillez vérifier la connexion MongoDB.'
+      });
+    }
+    
+    // En cas d'erreur, retourner des stats vides plutôt que de faire échouer
+    return res.status(200).json({
+      success: true,
+      data: {
+        totalPaid: 0,
+        totalPending: 0,
+        totalOverdue: 0,
+        paidCount: 0,
+        pendingCount: 0,
+        overdueCount: 0,
+        totalAmount: 0,
+        paidAmount: 0,
+        pendingAmount: 0,
+        overdueAmount: 0
+      },
+      ...(process.env.NODE_ENV === 'development' && { 
+        warning: 'Stats calculées avec des valeurs par défaut en raison d\'une erreur',
+        error: error.message
+      })
     });
   }
 };

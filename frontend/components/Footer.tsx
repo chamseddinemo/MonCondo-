@@ -1,18 +1,56 @@
 import { useState } from 'react'
 import Link from 'next/link'
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'
+
 export default function Footer() {
   const [contactForm, setContactForm] = useState({
     name: '',
     email: '',
     message: ''
   })
+  const [sending, setSending] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submitSuccess, setSubmitSuccess] = useState(false)
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    // TODO: Implement contact form submission
-    alert('Message envoyé!')
-    setContactForm({ name: '', email: '', message: '' })
+    setSending(true)
+    setSubmitError(null)
+    setSubmitSuccess(false)
+
+    try {
+      const response = await fetch(`${API_URL}/contact`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: contactForm.name.trim(),
+          email: contactForm.email.trim(),
+          message: contactForm.message.trim()
+        })
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Erreur lors de l\'envoi du message')
+      }
+
+      if (data.success) {
+        setSubmitSuccess(true)
+        setContactForm({ name: '', email: '', message: '' })
+        setTimeout(() => setSubmitSuccess(false), 5000)
+      } else {
+        throw new Error(data.message || 'Erreur lors de l\'envoi du message')
+      }
+    } catch (error: any) {
+      console.error('[Footer] Erreur envoi message:', error)
+      setSubmitError(error.message || 'Erreur lors de l\'envoi du message. Veuillez réessayer.')
+    } finally {
+      setSending(false)
+    }
   }
 
   return (
@@ -107,13 +145,24 @@ export default function Footer() {
           <div>
             <h3 className="text-lg font-semibold mb-4">Envoyez-nous un message</h3>
             <form onSubmit={handleSubmit} className="space-y-4">
+              {submitError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+                  {submitError}
+                </div>
+              )}
+              {submitSuccess && (
+                <div className="p-3 bg-green-50 border border-green-200 rounded text-green-700 text-sm">
+                  ✅ Message envoyé avec succès ! Nous vous répondrons dans les plus brefs délais.
+                </div>
+              )}
               <input
                 type="text"
                 placeholder="Votre nom"
                 value={contactForm.name}
                 onChange={(e) => setContactForm({...contactForm, name: e.target.value})}
                 required
-                className="w-full px-4 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:outline-none"
+                disabled={sending}
+                className="w-full px-4 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:outline-none disabled:opacity-50"
               />
               <input
                 type="email"
@@ -121,7 +170,8 @@ export default function Footer() {
                 value={contactForm.email}
                 onChange={(e) => setContactForm({...contactForm, email: e.target.value})}
                 required
-                className="w-full px-4 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:outline-none"
+                disabled={sending}
+                className="w-full px-4 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:outline-none disabled:opacity-50"
               />
               <textarea
                 placeholder="Votre message"
@@ -129,10 +179,15 @@ export default function Footer() {
                 onChange={(e) => setContactForm({...contactForm, message: e.target.value})}
                 required
                 rows={3}
-                className="w-full px-4 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:outline-none"
+                disabled={sending}
+                className="w-full px-4 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:outline-none disabled:opacity-50"
               />
-              <button type="submit" className="btn-primary w-full">
-                Envoyer
+              <button 
+                type="submit" 
+                disabled={sending}
+                className="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {sending ? '⏳ Envoi...' : 'Envoyer'}
               </button>
             </form>
           </div>

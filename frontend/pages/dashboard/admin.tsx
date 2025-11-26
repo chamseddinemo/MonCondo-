@@ -86,7 +86,7 @@ interface RecentMessage {
 }
 
 export default function AdminDashboard() {
-  const { user: authUser } = useAuth()
+  const { user: authUser, loading: authLoading, isAuthenticated } = useAuth()
   const router = useRouter()
   // Utiliser le hook centralisé pour toutes les données immobilières
   const { 
@@ -365,9 +365,19 @@ export default function AdminDashboard() {
     }
   }
 
+  // Charger les données seulement après vérification de l'authentification
   useEffect(() => {
-    loadDashboardData()
-  }, [])
+    // Attendre que l'authentification soit vérifiée avant de charger les données
+    if (authLoading) return
+    
+    // Si non authentifié, ne pas charger les données (ProtectedRoute gère la redirection)
+    if (!isAuthenticated || !authUser) return
+    
+    // Charger les données seulement si l'utilisateur est authentifié et admin
+    if (authUser && authUser.role === 'admin') {
+      loadDashboardData()
+    }
+  }, [authLoading, isAuthenticated, authUser])
 
   // Utiliser le hook de synchronisation centralisé (sans afficher le loading)
   usePaymentSync(refreshDashboardData, [authUser?._id])
@@ -416,6 +426,28 @@ export default function AdminDashboard() {
       'visiteur': 'bg-gray-100 text-gray-800'
     }
     return colors[role] || 'bg-gray-100 text-gray-800'
+  }
+
+  // Afficher un loader pendant la vérification de l'authentification
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
+          <p className="text-gray-600">Vérification de l'authentification...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Ne rien afficher si non authentifié (ProtectedRoute gère la redirection)
+  if (!isAuthenticated || !authUser) {
+    return null
+  }
+
+  // Vérifier que l'utilisateur a le bon rôle
+  if (authUser.role !== 'admin') {
+    return null
   }
 
   if (loading) {

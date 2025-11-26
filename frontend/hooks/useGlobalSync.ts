@@ -1,4 +1,5 @@
 import { useEffect, useCallback } from 'react';
+import { useSocket } from '../contexts/SocketContext';
 
 /**
  * Hook centralisé pour la synchronisation globale automatique
@@ -12,6 +13,7 @@ export function useGlobalSync(
   refreshCallback: () => void | Promise<void>,
   dependencies: any[] = []
 ) {
+  const { socket, isConnected } = useSocket();
   // Écouter les événements de synchronisation globale
   useEffect(() => {
     const handleGlobalSync = async (event: any) => {
@@ -71,12 +73,28 @@ export function useGlobalSync(
       }
     };
 
+    const handleUserProfileSync = async (event: any) => {
+      const { userId, user, timestamp } = event.detail || event || {};
+      console.log('[USE GLOBAL SYNC] Événement userProfileSync reçu:', { userId, user, timestamp });
+      
+      // Attendre un court délai pour que le backend soit synchronisé
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Recharger les données pour mettre à jour le profil dans toutes les demandes
+      try {
+        await refreshCallback();
+      } catch (error) {
+        console.error('[USE GLOBAL SYNC] Erreur rechargement:', error);
+      }
+    };
+
     // Écouter les événements globaux
     if (typeof window !== 'undefined') {
       window.addEventListener('globalSync', handleGlobalSync);
       window.addEventListener('globalPaymentSync', handlePaymentSync);
       window.addEventListener('globalRequestSync', handleRequestSync);
       window.addEventListener('globalStatsUpdated', handleStatsUpdated);
+      window.addEventListener('userProfileSync', handleUserProfileSync);
       
       // Écouter aussi les événements spécifiques pour compatibilité
       window.addEventListener('paymentListRefresh', handlePaymentSync);
@@ -91,6 +109,7 @@ export function useGlobalSync(
         window.removeEventListener('globalPaymentSync', handlePaymentSync);
         window.removeEventListener('globalRequestSync', handleRequestSync);
         window.removeEventListener('globalStatsUpdated', handleStatsUpdated);
+        window.removeEventListener('userProfileSync', handleUserProfileSync);
         window.removeEventListener('paymentListRefresh', handlePaymentSync);
         window.removeEventListener('requestListRefresh', handleRequestSync);
         window.removeEventListener('paymentProcessed', handlePaymentSync);
@@ -100,6 +119,34 @@ export function useGlobalSync(
       };
     }
   }, [refreshCallback, ...dependencies]);
+
+  // Écouter les événements Socket.io pour la synchronisation du profil utilisateur
+  useEffect(() => {
+    if (!socket || !isConnected) {
+      return;
+    }
+
+    const handleUserProfileSyncSocket = async (data: any) => {
+      const { userId, user, timestamp } = data || {};
+      console.log('[USE GLOBAL SYNC] Événement Socket.io userProfileSync reçu:', { userId, user, timestamp });
+      
+      // Attendre un court délai pour que le backend soit synchronisé
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Recharger les données pour mettre à jour le profil dans toutes les demandes
+      try {
+        await refreshCallback();
+      } catch (error) {
+        console.error('[USE GLOBAL SYNC] Erreur rechargement:', error);
+      }
+    };
+
+    socket.on('userProfileSync', handleUserProfileSyncSocket);
+
+    return () => {
+      socket.off('userProfileSync', handleUserProfileSyncSocket);
+    };
+  }, [socket, isConnected, refreshCallback]);
 
   // Fonction pour forcer un rechargement manuel
   const forceRefresh = useCallback(async () => {

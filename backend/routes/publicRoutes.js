@@ -3,6 +3,7 @@ const router = express.Router();
 const Building = require('../models/Building');
 const Unit = require('../models/Unit');
 const { getBuildingImageUrl, getUnitImageUrl } = require('../utils/imageHelper');
+const { geocodeAddress } = require('../utils/geocoding');
 
 // ============================================
 // ROUTES PUBLIQUES - Aucune authentification requise
@@ -48,7 +49,7 @@ router.get('/buildings', async (req, res) => {
         name: building.name,
         address: building.address,
         image: building.image, // Inclure le champ image pour les chemins locaux
-        imageUrl: building.image || getBuildingImageUrl(building),
+        imageUrl: building.image || null, // Uniquement images uploadées, pas Unsplash
         yearBuilt: building.yearBuilt,
         totalUnits,
         availableUnits
@@ -101,12 +102,12 @@ router.get('/buildings/:id', async (req, res) => {
       data: {
         ...building,
         image: building.image, // Inclure le champ image
-        imageUrl: building.image || getBuildingImageUrl(building),
+        imageUrl: building.image || null, // Uniquement images uploadées, pas Unsplash
         totalUnits,
         availableUnits,
         units: units.map(unit => ({
           ...unit,
-          imageUrl: (unit.images && unit.images.length > 0) ? unit.images[0] : getUnitImageUrl(unit)
+          imageUrl: (unit.images && unit.images.length > 0) ? unit.images[0] : null
         }))
       }
     });
@@ -130,21 +131,34 @@ router.get('/units', async (req, res) => {
       bedrooms, 
       minPrice, 
       maxPrice,
-      transactionType // 'location' ou 'vente'
+      transactionType, // 'location' ou 'vente'
+      building, // ID du building pour filtrer par immeuble
+      status // Statut spécifique (par défaut: disponible)
     } = req.query;
 
     const query = {
-      $or: [
-        { status: 'disponible' },
-        { status: 'negociation' }
-      ],
       isAvailable: { $ne: false }
     };
 
-    // Ne pas inclure les unités avec locataire
-    query.locataire = { $exists: false };
+    // Filtrer par statut si fourni, sinon seulement les disponibles
+    if (status) {
+      query.status = status;
+    } else {
+      query.$or = [
+        { status: 'disponible' },
+        { status: 'negociation' }
+      ];
+    }
+
+    // Ne pas inclure les unités avec locataire (sauf si statut spécifique)
+    if (!status || status === 'disponible' || status === 'negociation') {
+      query.locataire = { $exists: false };
+    }
 
     // Filtres
+    if (building) {
+      query.building = building;
+    }
     if (city) {
       query.ville = new RegExp(city, 'i');
     }
@@ -323,31 +337,311 @@ router.get('/units/sale', async (req, res) => {
 
 // @desc    Obtenir une unité publique par ID
 // @route   GET /api/public/units/:id
-// @access  Public
+// @access  Public (mais peut être restreint si l'unité est vendue/louée)
 // IMPORTANT: Cette route doit être définie APRÈS les routes spécifiques (/units/rent, /units/sale)
 router.get('/units/:id', async (req, res) => {
   try {
-    const unit = await Unit.findById(req.params.id)
-      .populate({
-        path: 'building',
-        select: 'name address image imageUrl'
-      })
-      .select('unitNumber type size surface bedrooms bathrooms status rentPrice salePrice images imageUrl description availableFrom monthlyCharges floor features building')
-      .lean();
+    const User = require('../models/User');
+    const jwt = require('jsonwebtoken');
+    
+    // Essayer d'obtenir l'utilisateur depuis le token si disponible
+    let currentUser = null;
+    const authHeader = req.headers.authorization;
+    
+    console.log('[PUBLIC UNIT] Headers authorization:', {
+      hasAuthHeader: !!authHeader,
+      authHeaderType: typeof authHeader,
+      startsWithBearer: authHeader && authHeader.startsWith('Bearer ')
+    });
+    
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.substring(7);
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        currentUser = await User.findById(decoded.id).select('_id role');
+        
+        console.log('[PUBLIC UNIT] Utilisateur authentifié:', {
+          userId: currentUser?._id?.toString(),
+          role: currentUser?.role,
+          hasUser: !!currentUser
+        });
+      } catch (tokenError) {
+        // Token invalide ou expiré, continuer sans utilisateur
+        console.log('[PUBLIC UNIT] Token invalide ou expiré:', tokenError.message);
+      }
+    } else {
+      console.log('[PUBLIC UNIT] Pas de token d\'authentification');
+    }
 
+    // Charger l'unité sans populate d'abord pour voir la structure
+    let unit = await Unit.findById(req.params.id).lean();
+    
     if (!unit) {
       return res.status(404).json({
         success: false,
         message: 'Unité non trouvée'
       });
     }
+    
+    console.log('[PUBLIC UNIT] Unité brute chargée:', {
+      unitId: unit._id,
+      status: unit.status,
+      proprietaireRaw: unit.proprietaire,
+      locataireRaw: unit.locataire,
+      proprietaireType: typeof unit.proprietaire
+    });
+    
+    // Populate le building
+    if (unit.building) {
+      const Building = require('../models/Building');
+      unit.building = await Building.findById(unit.building)
+        .select('name address image imageUrl')
+        .lean();
+    }
+    
+    // Populate le propriétaire (nécessaire pour la vérification)
+    let proprietaireId = null;
+    if (unit.proprietaire) {
+      if (typeof unit.proprietaire === 'object' && unit.proprietaire._id) {
+        // Déjà peuplé
+        proprietaireId = unit.proprietaire._id.toString();
+        unit.proprietaire = unit.proprietaire;
+      } else {
+        // Non peuplé - populate maintenant
+        const proprietaireDoc = await User.findById(unit.proprietaire)
+          .select('_id firstName lastName email')
+          .lean();
+        if (proprietaireDoc) {
+          proprietaireId = proprietaireDoc._id.toString();
+          unit.proprietaire = proprietaireDoc;
+        } else {
+          proprietaireId = unit.proprietaire.toString();
+          unit.proprietaire = { _id: unit.proprietaire };
+        }
+      }
+    }
+    
+    // Populate le locataire (nécessaire pour la vérification)
+    let locataireId = null;
+    if (unit.locataire) {
+      if (typeof unit.locataire === 'object' && unit.locataire._id) {
+        // Déjà peuplé
+        locataireId = unit.locataire._id.toString();
+        unit.locataire = unit.locataire;
+      } else {
+        // Non peuplé - populate maintenant
+        const locataireDoc = await User.findById(unit.locataire)
+          .select('_id firstName lastName email')
+          .lean();
+        if (locataireDoc) {
+          locataireId = locataireDoc._id.toString();
+          unit.locataire = locataireDoc;
+        } else {
+          locataireId = unit.locataire.toString();
+          unit.locataire = { _id: unit.locataire };
+        }
+      }
+    }
+    
+    console.log('[PUBLIC UNIT] Unité peuplée:', {
+      unitId: unit._id,
+      status: unit.status,
+      proprietaireId,
+      locataireId,
+      currentUserId: currentUser?._id?.toString(),
+      hasProprietaire: !!unit.proprietaire,
+      hasLocataire: !!unit.locataire
+    });
 
-    // Vérifier que l'unité est disponible ou en négociation
-    if (unit.status !== 'disponible' && unit.status !== 'Disponible' && unit.status !== 'negociation') {
-      return res.status(404).json({
-        success: false,
-        message: 'Unité non disponible'
+    // Vérifier les permissions : permettre l'accès si:
+    // 1. L'unité est disponible ou en négociation (public)
+    // 2. L'utilisateur est le propriétaire
+    // 3. L'utilisateur est le locataire
+    // 4. L'utilisateur est admin
+    const isAvailable = unit.status === 'disponible' || unit.status === 'Disponible' || unit.status === 'negociation';
+    
+    // Vérifier si l'utilisateur est propriétaire - Vérification robuste avec plusieurs méthodes
+    let isOwner = false;
+    const userId = currentUser ? (currentUser._id ? currentUser._id.toString().trim() : String(currentUser._id).trim()) : null;
+    
+    if (currentUser && userId && unit._id) {
+      console.log('[PUBLIC UNIT] 🔍 Début vérification propriétaire:', {
+        userId,
+        unitId: unit._id.toString(),
+        hasProprietaireId: !!proprietaireId,
+        proprietaireId,
+        hasUnitProprietaire: !!unit.proprietaire
       });
+      
+      // PRIORITÉ 1: Vérifier directement dans la base de données (le plus fiable)
+      try {
+        // Utiliser une requête MongoDB avec ObjectId pour comparaison stricte
+        const mongoose = require('mongoose');
+        const userObjectId = new mongoose.Types.ObjectId(userId);
+        
+        const unitCheck = await Unit.findOne({ 
+          _id: unit._id,
+          proprietaire: userObjectId 
+        }).select('proprietaire').lean();
+        
+        // Si la requête retourne un résultat, c'est que l'utilisateur est le propriétaire
+        if (unitCheck) {
+          isOwner = true;
+          
+          console.log('[PUBLIC UNIT] ✅ Vérification BD directe (requête MongoDB):', {
+            userId,
+            userObjectId: userObjectId.toString(),
+            isOwner: true,
+            unitFound: !!unitCheck
+          });
+        } else {
+          // Si pas trouvé avec la requête directe, vérifier avec comparaison d'IDs
+          const unitCheck2 = await Unit.findById(unit._id).select('proprietaire').lean();
+          if (unitCheck2 && unitCheck2.proprietaire) {
+            let dbOwnerId = null;
+            
+            // Extraire l'ID du propriétaire de différentes façons
+            if (unitCheck2.proprietaire._id) {
+              dbOwnerId = unitCheck2.proprietaire._id.toString().trim();
+            } else {
+              dbOwnerId = String(unitCheck2.proprietaire).trim();
+            }
+            
+            // Utiliser ObjectId.equals pour comparaison stricte
+            try {
+              const ownerObjectId = new mongoose.Types.ObjectId(dbOwnerId);
+              isOwner = userObjectId.equals(ownerObjectId);
+            } catch (oidError) {
+              // Fallback à comparaison de chaînes
+              isOwner = userId === dbOwnerId;
+            }
+            
+            console.log('[PUBLIC UNIT] ✅ Vérification BD (comparaison IDs):', {
+              userId,
+              dbOwnerId,
+              isOwner,
+              match: userId === dbOwnerId
+            });
+          }
+        }
+      } catch (dbError) {
+        console.error('[PUBLIC UNIT] ❌ Erreur vérification BD:', dbError.message);
+      }
+      
+      // Fallback: Utiliser proprietaireId si disponible et pas encore vérifié
+      if (!isOwner && proprietaireId) {
+        const ownerIdStr = String(proprietaireId).trim();
+        isOwner = userId === ownerIdStr;
+        
+        console.log('[PUBLIC UNIT] Fallback 1 (proprietaireId):', {
+          userId,
+          proprietaireId: ownerIdStr,
+          isOwner
+        });
+      }
+      
+      // Fallback 2: Utiliser unit.proprietaire directement
+      if (!isOwner && unit.proprietaire) {
+        let ownerIdStr = null;
+        
+        if (typeof unit.proprietaire === 'object' && unit.proprietaire._id) {
+          ownerIdStr = unit.proprietaire._id.toString().trim();
+        } else if (typeof unit.proprietaire === 'object' && unit.proprietaire.toString) {
+          ownerIdStr = unit.proprietaire.toString().trim();
+        } else {
+          ownerIdStr = String(unit.proprietaire).trim();
+        }
+        
+        if (ownerIdStr) {
+          isOwner = userId === ownerIdStr;
+          
+          console.log('[PUBLIC UNIT] Fallback 2 (unit.proprietaire):', {
+            userId,
+            ownerId: ownerIdStr,
+            isOwner
+          });
+        }
+      }
+      
+      console.log('[PUBLIC UNIT] ✅ Résultat final vérification propriétaire:', {
+        userId,
+        isOwner,
+        hasProprietaireId: !!proprietaireId,
+        hasUnitProprietaire: !!unit.proprietaire
+      });
+    } else {
+      console.log('[PUBLIC UNIT] ⚠️ Pas de vérification propriétaire:', {
+        hasCurrentUser: !!currentUser,
+        hasUserId: !!userId,
+        hasUnitId: !!unit._id
+      });
+    }
+    
+    // Vérifier si l'utilisateur est locataire en utilisant locataireId déjà extrait
+    let isTenant = false;
+    if (currentUser && locataireId) {
+      const userId = currentUser._id ? currentUser._id.toString() : String(currentUser._id);
+      isTenant = userId === locataireId;
+      
+      console.log('[PUBLIC UNIT] Vérification locataire:', {
+        userId,
+        locataireId,
+        isTenant,
+        match: userId === locataireId
+      });
+    }
+    
+    const isAdmin = currentUser && currentUser.role === 'admin';
+
+    console.log('[PUBLIC UNIT] Permissions:', {
+      isAvailable,
+      isOwner,
+      isTenant,
+      isAdmin,
+      status: unit.status,
+      hasCurrentUser: !!currentUser,
+      currentUserRole: currentUser?.role,
+      hasProprietaire: !!unit.proprietaire,
+      hasLocataire: !!unit.locataire
+    });
+
+    // Si l'unité n'est pas disponible publiquement, vérifier les permissions
+    // MAIS permettre l'accès en lecture seule pour tous les utilisateurs authentifiés (même visiteurs)
+    // pour qu'ils puissent voir les informations de l'unité même si elle est louée/vendue
+    if (!isAvailable) {
+      if (!isOwner && !isTenant && !isAdmin && !currentUser) {
+        // Seulement bloquer si l'utilisateur n'est pas authentifié
+        console.log('[PUBLIC UNIT] ❌ Accès refusé - unité non disponible et utilisateur non authentifié');
+        console.log('[PUBLIC UNIT] Détails du refus:', {
+          status: unit.status,
+          isAvailable,
+          isOwner,
+          isTenant,
+          isAdmin,
+          hasCurrentUser: !!currentUser,
+          currentUserId: currentUser?._id?.toString(),
+          currentUserRole: currentUser?.role,
+          proprietaireId,
+          locataireId,
+          unitProprietaire: unit.proprietaire,
+          unitLocataire: unit.locataire
+        });
+        return res.status(404).json({
+          success: false,
+          message: 'Unité non disponible'
+        });
+      } else {
+        // Autoriser l'accès pour les utilisateurs authentifiés (même visiteurs)
+        // et pour les propriétaires/locataires/admins
+        console.log('[PUBLIC UNIT] ✅ Accès autorisé:', {
+          isOwner: isOwner ? '✅ Propriétaire' : '',
+          isTenant: isTenant ? '✅ Locataire' : '',
+          isAdmin: isAdmin ? '✅ Admin' : '',
+          isAuthenticated: currentUser ? '✅ Utilisateur authentifié' : ''
+        });
+      }
+    } else {
+      console.log('[PUBLIC UNIT] ✅ Accès public autorisé - unité disponible');
     }
 
     // S'assurer que l'unité a une image
@@ -370,6 +664,48 @@ router.get('/units/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || 'Erreur lors de la récupération de l\'unité'
+    });
+  }
+});
+
+// @desc    Géocoder une adresse (fallback pour le frontend)
+// @route   POST /api/public/geocode
+// @access  Public
+router.post('/geocode', async (req, res) => {
+  try {
+    const { address } = req.body;
+    
+    if (!address || !address.city) {
+      return res.status(400).json({
+        success: false,
+        message: 'Adresse invalide - ville requise'
+      });
+    }
+
+    console.log('[PUBLIC GEOCODE] Géocodage de l\'adresse:', address);
+    
+    const coordinates = await geocodeAddress(address);
+    
+    if (coordinates) {
+      console.log('[PUBLIC GEOCODE] ✅ Coordonnées trouvées:', coordinates);
+      return res.status(200).json({
+        success: true,
+        coordinates
+      });
+    } else {
+      console.warn('[PUBLIC GEOCODE] ⚠️ Impossible de géocoder l\'adresse');
+      // Retourner les coordonnées par défaut pour Montréal
+      return res.status(200).json({
+        success: true,
+        coordinates: { lat: 45.5017, lng: -73.5673 }
+      });
+    }
+  } catch (error) {
+    console.error('[PUBLIC GEOCODE] ❌ Erreur:', error);
+    // Même en cas d'erreur, retourner les coordonnées par défaut
+    return res.status(200).json({
+      success: true,
+      coordinates: { lat: 45.5017, lng: -73.5673 }
     });
   }
 });

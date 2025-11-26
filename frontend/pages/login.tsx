@@ -17,14 +17,18 @@ export default function Login() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const router = useRouter()
-  const { login, isAuthenticated } = useAuth()
+  const { login, isAuthenticated, loading: authLoading } = useAuth()
 
-  // Rediriger si déjà connecté
+  // Rediriger si déjà connecté (attendre que le chargement soit terminé)
   useEffect(() => {
+    // Attendre que l'authentification soit vérifiée avant de rediriger
+    if (authLoading) return
+    
     if (isAuthenticated) {
-      router.push('/dashboard')
+      // Utiliser replace au lieu de push pour éviter les problèmes de navigation
+      router.replace('/dashboard')
     }
-  }, [isAuthenticated, router])
+  }, [isAuthenticated, authLoading, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -35,7 +39,8 @@ export default function Login() {
       if (isLogin) {
         // Connexion via le contexte
         await login(formData.email, formData.password)
-        router.push('/dashboard')
+        // Ne pas rediriger ici - laisser le useEffect gérer la redirection
+        // Cela évite les conflits de navigation
       } else {
         // Inscription
         const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'
@@ -44,25 +49,60 @@ export default function Login() {
         if (response.data.success) {
           // Après inscription, connecter automatiquement
           await login(formData.email, formData.password)
-          router.push('/dashboard')
+          // Ne pas rediriger ici - laisser le useEffect gérer la redirection
+          // Cela évite les conflits de navigation
         }
       }
     } catch (error: any) {
       // Afficher le message d'erreur détaillé
-      const errorMessage = error.message || error.response?.data?.message || 'Erreur lors de la connexion'
-      setError(errorMessage)
+      let errorMessage = 'Erreur lors de la connexion'
       
-      // Log pour debug
-      console.error('[LOGIN] Erreur:', error)
-      if (error.code) {
-        console.error('[LOGIN] Code erreur:', error.code)
-      }
-      if (error.request && !error.response) {
+      if (error.response) {
+        // Erreur avec réponse du serveur
+        errorMessage = error.response.data?.message || error.response.data?.error || error.message
+        console.error('[LOGIN] Erreur serveur:', {
+          status: error.response.status,
+          data: error.response.data,
+          message: errorMessage
+        })
+      } else if (error.request) {
+        // Pas de réponse du serveur
+        errorMessage = 'Erreur de connexion. Le serveur ne répond pas. Vérifiez que le backend est démarré.'
         console.error('[LOGIN] Pas de réponse du serveur - Backend probablement non démarré')
+      } else {
+        // Autre erreur
+        errorMessage = error.message || 'Erreur inattendue'
+        console.error('[LOGIN] Erreur:', error)
       }
+      
+      setError(errorMessage)
     } finally {
       setLoading(false)
     }
+  }
+
+  // Afficher un loader pendant la vérification de l'authentification
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
+          <p className="text-gray-600">Vérification de l'authentification...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Ne rien afficher si déjà authentifié (en cours de redirection)
+  if (isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
+          <p className="text-gray-600">Chargement...</p>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -109,17 +149,17 @@ export default function Login() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Rôle
+                    Rôle <span className="text-red-500">*</span>
                   </label>
                   <select
                     value={formData.role}
                     onChange={(e) => setFormData({...formData, role: e.target.value})}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-gray-50"
+                    disabled
                   >
                     <option value="visiteur">Visiteur</option>
-                    <option value="locataire">Locataire</option>
-                    <option value="proprietaire">Propriétaire</option>
                   </select>
+                  <p className="text-xs text-gray-500 mt-1">Le rôle "Visiteur" est attribué par défaut lors de l'inscription</p>
                 </div>
               </>
             )}

@@ -3,6 +3,8 @@ import Header from '../components/Header'
 import Footer from '../components/Footer'
 import Link from 'next/link'
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'
+
 export default function Contact() {
   const [formData, setFormData] = useState({
     name: '',
@@ -12,17 +14,46 @@ export default function Contact() {
     message: ''
   })
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
+    setError(null)
+    setSuccess(false)
+    
     try {
-      // TODO: Implement contact form submission
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      alert('Message envoyé avec succès! Nous vous répondrons dans les plus brefs délais.')
+      const response = await fetch(`${API_URL}/contact`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: formData.name.trim(),
+          email: formData.email.trim(),
+          phone: formData.phone.trim() || undefined,
+          subject: formData.subject.trim() || undefined,
+          message: formData.message.trim()
+        })
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Erreur lors de l\'envoi du message')
+      }
+
+      if (data.success) {
+        setSuccess(true)
       setFormData({ name: '', email: '', phone: '', subject: '', message: '' })
-    } catch (error) {
-      alert('Erreur lors de l\'envoi du message. Veuillez réessayer.')
+        setTimeout(() => setSuccess(false), 5000)
+      } else {
+        throw new Error(data.message || 'Erreur lors de l\'envoi du message')
+      }
+    } catch (err: any) {
+      console.error('[Contact] Erreur envoi message:', err)
+      setError(err.message || 'Erreur lors de l\'envoi du message. Veuillez réessayer.')
     } finally {
       setLoading(false)
     }
@@ -60,7 +91,7 @@ export default function Contact() {
       <Header />
       <div className="min-h-screen bg-gray-50 pt-20">
         {/* Hero Section */}
-        <div className="bg-gradient-to-r from-primary-600 to-primary-800 text-white py-16">
+        <div className="bg-gradient-to-r from-primary-500 via-primary-600 to-primary-700 text-white py-16">
           <div className="container mx-auto px-4">
             <h1 className="text-5xl font-bold mb-4">Contactez-nous</h1>
             <p className="text-xl text-gray-200 max-w-2xl">
@@ -74,6 +105,16 @@ export default function Contact() {
             {/* Contact Form */}
             <div className="card p-8">
               <h2 className="text-3xl font-bold mb-6">Envoyez-nous un message</h2>
+              {error && (
+                <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+                  {error}
+                </div>
+              )}
+              {success && (
+                <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg text-green-700">
+                  ✅ Message envoyé avec succès ! Nous vous répondrons dans les plus brefs délais.
+                </div>
+              )}
               <form onSubmit={handleSubmit} className="space-y-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -153,9 +194,9 @@ export default function Contact() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full btn-primary"
+                  className="w-full btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {loading ? 'Envoi en cours...' : 'Envoyer le message'}
+                  {loading ? '⏳ Envoi en cours...' : 'Envoyer le message'}
                 </button>
               </form>
             </div>

@@ -288,13 +288,14 @@ export async function getAvailableUnits(): Promise<Unit[]> {
 
 /**
  * Récupère les statistiques globales
- * Utilise GET /api/dashboard/admin/stats (prioritaire) ou GET /api/units/stats
+ * Utilise GET /api/admin/stats (prioritaire) ou GET /api/units/stats
  */
 export async function getGlobalStats(): Promise<GlobalStats> {
   try {
-    // Essayer d'abord la route dashboard/admin/stats (la plus complète)
+    // Essayer d'abord la route admin/stats (la plus complète)
+    // La route backend est /admin/stats sous /api, donc l'appel est directement /admin/stats
     try {
-      const response = await authenticatedAxios.get('/dashboard/admin/stats')
+      const response = await authenticatedAxios.get('/admin/stats')
       if (response.data?.success && response.data.data?.stats) {
         const stats = response.data.data.stats
         const totalOccupables = stats.totalUnits || 0
@@ -314,7 +315,7 @@ export async function getGlobalStats(): Promise<GlobalStats> {
         }
       }
     } catch (adminStatsError) {
-      console.log('[realEstateService] Route /dashboard/admin/stats non disponible, tentative /units/stats')
+      console.log('[realEstateService] Route /admin/stats non disponible, tentative /units/stats', adminStatsError)
     }
 
     // Sinon, utiliser /units/stats
@@ -355,6 +356,230 @@ export async function getGlobalStats(): Promise<GlobalStats> {
       monthlyRevenue: 0,
       occupancyRate: 0
     }
+  }
+}
+
+/**
+ * Crée un nouvel immeuble
+ * Utilise POST /api/buildings
+ */
+export async function createBuilding(buildingData: {
+  name: string
+  address: {
+    street: string
+    city: string
+    province: string
+    postalCode: string
+    country?: string
+  }
+  yearBuilt?: number
+  description?: string
+  amenities?: string[]
+  image?: string
+  isActive?: boolean
+  totalUnits?: number
+}): Promise<Building> {
+  try {
+    console.log('[realEstateService] 📝 Création d\'un immeuble...')
+    
+    const response = await authenticatedAxios.post('/buildings', buildingData)
+    
+    if (response.data && response.data.success) {
+      console.log('[realEstateService] ✅ Immeuble créé:', response.data.data._id)
+      return response.data.data
+    } else {
+      throw new Error('Réponse invalide du serveur')
+    }
+  } catch (error: any) {
+    console.error('[realEstateService] ❌ Erreur création immeuble:', {
+      message: error.message,
+      status: error.response?.status,
+      data: error.response?.data
+    })
+    
+    if (error.response?.status === 401) {
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    
+    if (error.response?.status === 403) {
+      throw new Error('Accès refusé. Vous n\'avez pas les permissions nécessaires.')
+    }
+    
+    throw new Error(
+      error.response?.data?.message || 
+      error.message || 
+      'Erreur lors de la création de l\'immeuble'
+    )
+  }
+}
+
+/**
+ * Crée une nouvelle unité
+ * Utilise POST /api/units
+ */
+export async function createUnit(unitData: {
+  building: string
+  unitNumber: string
+  floor: number
+  type: 'studio' | '1br' | '2br' | '3br' | '4br' | 'penthouse' | 'commercial'
+  size: number
+  bedrooms?: number
+  bathrooms?: number
+  status?: 'disponible' | 'loue' | 'vendu' | 'maintenance' | 'negociation' | 'vendue_louee'
+  rentPrice?: number
+  salePrice?: number
+  monthlyCharges?: number
+  availableFrom?: string
+  description?: string
+  features?: string[]
+  transactionType?: 'vente' | 'location'
+  isAvailable?: boolean
+}): Promise<Unit> {
+  try {
+    console.log('[realEstateService] 📝 Création d\'une unité...')
+    
+    const response = await authenticatedAxios.post('/units', unitData)
+    
+    if (response.data && response.data.success) {
+      console.log('[realEstateService] ✅ Unité créée:', response.data.data._id)
+      return response.data.data
+    } else {
+      throw new Error('Réponse invalide du serveur')
+    }
+  } catch (error: any) {
+    console.error('[realEstateService] ❌ Erreur création unité:', {
+      message: error.message,
+      status: error.response?.status,
+      data: error.response?.data
+    })
+    
+    if (error.response?.status === 401) {
+      throw new Error('Session expirée. Veuillez vous reconnecter.')
+    }
+    
+    if (error.response?.status === 403) {
+      throw new Error('Accès refusé. Vous n\'avez pas les permissions nécessaires.')
+    }
+    
+    throw new Error(
+      error.response?.data?.message || 
+      error.message || 
+      'Erreur lors de la création de l\'unité'
+    )
+  }
+}
+
+/**
+ * Récupère une unité par ID
+ * Utilise GET /api/units/:id
+ */
+export async function getUnitById(unitId: string): Promise<Unit> {
+  try {
+    console.log('[realEstateService] 📡 Chargement unité:', unitId)
+    const response = await authenticatedAxios.get(`/units/${unitId}`)
+    
+    if (response.data && response.data.success) {
+      return response.data.data
+    } else {
+      throw new Error('Réponse invalide du serveur')
+    }
+  } catch (error: any) {
+    console.error('[realEstateService] ❌ Erreur chargement unité:', error)
+    throw new Error(
+      error.response?.data?.message || 
+      error.message || 
+      'Erreur lors de la récupération de l\'unité'
+    )
+  }
+}
+
+/**
+ * Met à jour une unité
+ * Utilise PUT /api/units/:id
+ */
+export async function updateUnit(unitId: string, unitData: any): Promise<Unit> {
+  try {
+    console.log('[realEstateService] 📝 Mise à jour unité:', unitId)
+    const response = await authenticatedAxios.put(`/units/${unitId}`, unitData)
+    
+    if (response.data && response.data.success) {
+      console.log('[realEstateService] ✅ Unité mise à jour:', unitId)
+      return response.data.data
+    } else {
+      throw new Error('Réponse invalide du serveur')
+    }
+  } catch (error: any) {
+    console.error('[realEstateService] ❌ Erreur mise à jour unité:', error)
+    throw new Error(
+      error.response?.data?.message || 
+      error.message || 
+      'Erreur lors de la mise à jour de l\'unité'
+    )
+  }
+}
+
+/**
+ * Supprime une unité
+ * Utilise DELETE /api/units/:id
+ */
+export async function deleteUnit(unitId: string): Promise<void> {
+  try {
+    console.log('[realEstateService] 🗑️ Suppression unité:', unitId)
+    const response = await authenticatedAxios.delete(`/units/${unitId}`)
+    
+    if (response.data && response.data.success) {
+      console.log('[realEstateService] ✅ Unité supprimée:', unitId)
+    } else {
+      throw new Error('Réponse invalide du serveur')
+    }
+  } catch (error: any) {
+    console.error('[realEstateService] ❌ Erreur suppression unité:', error)
+    throw new Error(
+      error.response?.data?.message || 
+      error.message || 
+      'Erreur lors de la suppression de l\'unité'
+    )
+  }
+}
+
+/**
+ * Met à jour un immeuble
+ * Utilise PUT /api/buildings/:id
+ */
+export async function updateBuilding(buildingId: string, buildingData: {
+  name?: string
+  address?: {
+    street?: string
+    city?: string
+    province?: string
+    postalCode?: string
+    country?: string
+  }
+  yearBuilt?: number
+  description?: string
+  amenities?: string[]
+  image?: string
+  isActive?: boolean
+  totalUnits?: number
+}): Promise<Building> {
+  try {
+    console.log('[realEstateService] 📝 Mise à jour immeuble:', buildingId)
+    
+    const response = await authenticatedAxios.put(`/buildings/${buildingId}`, buildingData)
+    
+    if (response.data && response.data.success) {
+      console.log('[realEstateService] ✅ Immeuble mis à jour:', buildingId)
+      return response.data.data
+    } else {
+      throw new Error('Réponse invalide du serveur')
+    }
+  } catch (error: any) {
+    console.error('[realEstateService] ❌ Erreur mise à jour immeuble:', error)
+    throw new Error(
+      error.response?.data?.message || 
+      error.message || 
+      'Erreur lors de la mise à jour de l\'immeuble'
+    )
   }
 }
 

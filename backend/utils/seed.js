@@ -749,7 +749,7 @@ const seedData = async () => {
     console.log(`   📄 Documents: ${await Document.countDocuments()}\n`);
     
     console.log('🔐 Comptes créés:');
-    console.log('   Admin:', admin.email, '- Mot de passe: admin123');
+    console.log('   Admin:', admin.email, '- Mot de passe: administrateur');
     console.log('   Propriétaire 1:', proprietaire1.email, '- Mot de passe: password123');
     console.log('   Propriétaire 2:', proprietaire2.email, '- Mot de passe: password123');
     console.log('   Propriétaire 3:', proprietaire3.email, '- Mot de passe: password123');

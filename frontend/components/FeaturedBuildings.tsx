@@ -44,9 +44,22 @@ export default function FeaturedBuildings() {
     loadBuildings()
   }, [])
 
-  // Fonction pour obtenir le chemin de l'image
+  // Fonction pour obtenir le chemin de l'image (uniquement images uploadées)
   const getImagePath = (building: Building) => {
     if (building.image) {
+      // Remplacer Unsplash par une image locale
+      if (building.image.includes('unsplash.com')) {
+        const buildingImages = [
+          'imme1.jpeg', 'imme2.jpeg', 'imme3.jpg', 'imme4.png',
+          'immeb 5.jpg', 'immeb 6.jpg', 'immeb 7.jpg', 'immeb 9.png', 'immeub 8.jpg'
+        ]
+        if (building._id) {
+          const hash = building._id.toString().split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+          const imageIndex = hash % buildingImages.length
+          return `/images/immeubles/${buildingImages[imageIndex]}`
+        }
+        return `/images/immeubles/${buildingImages[0]}`
+      }
       // Si c'est un chemin local, le retourner tel quel
       if (building.image.startsWith('/images/')) {
         return building.image
@@ -55,6 +68,19 @@ export default function FeaturedBuildings() {
       return `/images/immeubles/${building.image}`
     }
     if (building.imageUrl) {
+      // Remplacer Unsplash par une image locale
+      if (building.imageUrl.includes('unsplash.com')) {
+        const buildingImages = [
+          'imme1.jpeg', 'imme2.jpeg', 'imme3.jpg', 'imme4.png',
+          'immeb 5.jpg', 'immeb 6.jpg', 'immeb 7.jpg', 'immeb 9.png', 'immeub 8.jpg'
+        ]
+        if (building._id) {
+          const hash = building._id.toString().split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+          const imageIndex = hash % buildingImages.length
+          return `/images/immeubles/${buildingImages[imageIndex]}`
+        }
+        return `/images/immeubles/${buildingImages[0]}`
+      }
       if (building.imageUrl.startsWith('http')) {
         return building.imageUrl
       }
@@ -63,8 +89,17 @@ export default function FeaturedBuildings() {
       }
       return `/images/immeubles/${building.imageUrl}`
     }
-    // Fallback vers une image par défaut
-    return '/images/default/placeholder.jpg'
+    // Fallback : utiliser une image locale basée sur l'ID
+    const buildingImages = [
+      'imme1.jpeg', 'imme2.jpeg', 'imme3.jpg', 'imme4.png',
+      'immeb 5.jpg', 'immeb 6.jpg', 'immeb 7.jpg', 'immeb 9.png', 'immeub 8.jpg'
+    ]
+    if (building._id) {
+      const hash = building._id.toString().split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+      const imageIndex = hash % buildingImages.length
+      return `/images/immeubles/${buildingImages[imageIndex]}`
+    }
+    return `/images/immeubles/${buildingImages[0]}`
   }
 
   if (loading) {
@@ -106,8 +141,7 @@ export default function FeaturedBuildings() {
           {buildings.map((building) => (
             <div
               key={building._id}
-              className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-2 cursor-pointer"
-              onClick={() => router.push('/explorer')}
+              className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-2"
             >
               {/* Image */}
               <div className="relative h-64 bg-gradient-to-br from-primary-400 to-primary-600">
@@ -160,15 +194,12 @@ export default function FeaturedBuildings() {
                 </div>
 
                 {/* Button */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    router.push('/explorer')
-                  }}
-                  className="w-full mt-4 btn-primary"
+                <Link
+                  href="/explorer"
+                  className="w-full mt-4 btn-primary block text-center"
                 >
                   Voir les unités
-                </button>
+                </Link>
               </div>
             </div>
           ))}

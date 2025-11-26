@@ -110,13 +110,31 @@ async function syncPaymentAndRequestGlobally(paymentId, requestId) {
     
     // Émettre un événement global combiné
     if (typeof global !== 'undefined' && global.io) {
+      // Émettre un événement globalSync
       global.io.emit('globalSync', {
         paymentId,
         requestId,
+        type: 'payment',
+        action: paymentSync?.status === 'paye' ? 'paid' : 'updated',
         timestamp: new Date().toISOString(),
         paymentSync,
         requestSync
       });
+      
+      // Si le paiement est payé, émettre aussi un événement paymentPaid spécifique
+      if (paymentSync && paymentSync.status === 'paye') {
+        global.io.emit('paymentPaid', {
+          paymentId: paymentSync.paymentId,
+          requestId: requestId,
+          status: 'paye',
+          amount: paymentSync.amount,
+          paymentMethod: paymentSync.paymentMethod,
+          transactionId: paymentSync.transactionId,
+          paidDate: paymentSync.paidDate,
+          timestamp: new Date().toISOString()
+        });
+        console.log('[GLOBAL SYNC] 📡 Événement paymentPaid émis pour requestId:', requestId);
+      }
     }
     
     if (typeof window !== 'undefined') {

@@ -4,12 +4,15 @@ import axios from 'axios'
 import Link from 'next/link'
 import Header from '../components/Header'
 import { useAuth } from '../contexts/AuthContext'
-import { buildApiUrl, getApiConfig, getAuthToken, logApiRequest, logApiResponse, getErrorMessage, showSuccessMessage, showErrorMessage } from '@/utils/api'
+import { buildApiUrl, getApiConfig, getAuthToken, logApiRequest, logApiResponse, getErrorMessage, showSuccessMessage, showErrorMessage } from '../utils/api'
 
 export default function Request() {
   const { user, isAuthenticated } = useAuth()
   const router = useRouter()
-  const { unitId } = router.query
+  const { unitId, unit } = router.query
+  
+  // Utiliser unitId ou unit (les deux peuvent être utilisés selon la page source)
+  const selectedUnitId = (unitId || unit) as string | undefined
   
   const [formData, setFormData] = useState({
     type: 'location',
@@ -23,9 +26,12 @@ export default function Request() {
   const [success, setSuccess] = useState(false)
 
   useEffect(() => {
-    // Si unitId est fourni dans l'URL, l'utiliser
-    if (unitId) {
-      setFormData(prev => ({ ...prev, unitId: unitId as string }))
+    // Attendre que le router soit prêt avant d'accéder aux query params
+    if (!router.isReady) return
+    
+    // Si unitId ou unit est fourni dans l'URL, l'utiliser
+    if (selectedUnitId) {
+      setFormData(prev => ({ ...prev, unitId: selectedUnitId }))
     }
     
     // Vérifier l'authentification
@@ -35,7 +41,7 @@ export default function Request() {
     }
     
     loadAvailableUnits()
-  }, [unitId, isAuthenticated, router])
+  }, [selectedUnitId, isAuthenticated, router.isReady])
 
   const loadAvailableUnits = async () => {
     try {
@@ -103,16 +109,20 @@ export default function Request() {
           setSuccess(true)
           showSuccessMessage(response.data.message || 'Demande créée avec succès !')
           
-          // Rediriger vers le dashboard après 2 secondes
+          // Rediriger vers le dashboard après 1.5 secondes (plus rapide)
           setTimeout(() => {
             if (user.role === 'locataire') {
               router.push('/dashboard/locataire')
             } else if (user.role === 'admin') {
               router.push('/dashboard/admin')
+            } else if (user.role === 'proprietaire') {
+              router.push('/dashboard/proprietaire')
+            } else if (user.role === 'visiteur') {
+              router.push('/dashboard/visiteur')
             } else {
               router.push('/dashboard')
             }
-          }, 2000)
+          }, 1500)
         } else {
           const errorMessage = getErrorMessage({ response }, 'Une erreur est survenue lors de la création de la demande.')
           setError(errorMessage)
@@ -172,7 +182,7 @@ export default function Request() {
 
           {success && (
             <div className="mb-6 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg">
-              ✅ Demande créée avec succès ! Redirection vers votre tableau de bord...
+              ✅ Demande créée avec succès !
             </div>
           )}
 

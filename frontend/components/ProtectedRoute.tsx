@@ -43,10 +43,35 @@ export default function ProtectedRoute({
     // Attendre que le chargement soit terminé
     if (loading) return
 
-    // Si non authentifié, rediriger vers login
+    // Si non authentifié, rediriger vers login (utiliser replace pour éviter les retours)
+    // Vérifier que nous ne sommes pas déjà sur la page de redirection pour éviter les boucles
     if (!isAuthenticated || !user) {
-      router.push(redirectTo)
+      // Éviter les redirections multiples en vérifiant la route actuelle et l'état de navigation
+      const currentPath = router.pathname || router.asPath
+      const isAlreadyOnRedirectPage = currentPath === redirectTo || currentPath.includes(redirectTo)
+      
+      if (!isAlreadyOnRedirectPage) {
+        // Utiliser window.location.href au lieu de router.replace pour éviter les conflits
+        // Cela force une navigation complète et évite les problèmes d'abort
+        if (typeof window !== 'undefined') {
+          window.location.href = redirectTo
+        }
+      }
       return
+    }
+
+    // Permettre aux visiteurs d'accéder à /locataire/requests/[id] pour signer leurs documents
+    const isRequestDetailPage = router.pathname.startsWith('/locataire/requests/');
+    if (isRequestDetailPage && user.role === 'visiteur') {
+      // Les visiteurs peuvent accéder pour signer leurs documents
+      return;
+    }
+
+    // Permettre aux propriétaires d'accéder à /locataire/requests/[id] s'ils ont créé la demande
+    // (car ils étaient visiteur au moment de la création)
+    if (isRequestDetailPage && user.role === 'proprietaire') {
+      // Les propriétaires peuvent accéder pour signer leurs documents de demande
+      return;
     }
 
     // Les administrateurs ont accès à tout, peu importe les rôles requis
@@ -54,7 +79,7 @@ export default function ProtectedRoute({
       // Admin a accès, continuer
     } else if (requiredRoles.length > 0 && !hasRole(requiredRoles)) {
       // Si des rôles sont requis et que l'utilisateur n'est pas admin, vérifier le rôle
-      router.push('/unauthorized')
+      router.replace('/unauthorized')
       return
     }
   }, [loading, isAuthenticated, user, requiredRoles, hasRole, router, redirectTo])
@@ -76,8 +101,13 @@ export default function ProtectedRoute({
     return null
   }
 
-  // Les administrateurs ont accès à tout, peu importe les rôles requis
-  if (user.role === 'admin') {
+  // Permettre aux visiteurs d'accéder à /locataire/requests/[id] pour signer leurs documents
+  const isRequestDetailPage = router.pathname.startsWith('/locataire/requests/');
+  if (isRequestDetailPage && (user.role === 'visiteur' || user.role === 'proprietaire')) {
+    // Les visiteurs et propriétaires peuvent accéder pour signer leurs documents
+    // (les propriétaires peuvent avoir été visiteur au moment de la création de la demande)
+  } else if (user.role === 'admin') {
+    // Les administrateurs ont accès à tout, peu importe les rôles requis
     // Admin a accès, continuer
   } else if (requiredRoles.length > 0 && !hasRole(requiredRoles)) {
     // Si des rôles sont requis et que l'utilisateur n'est pas admin, vérifier le rôle

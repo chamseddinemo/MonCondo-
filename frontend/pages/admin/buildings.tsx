@@ -9,8 +9,10 @@ import Footer from '../../components/Footer'
 import ProtectedRoute from '../../components/ProtectedRoute'
 import { useAuth } from '../../contexts/AuthContext'
 import { getBuildingImagePath } from '../../utils/imageUtils'
-import { getAllBuildings, getBuildingsStats, type Building } from '../../services/realEstateService'
+import { getAllBuildings, getBuildingsStats, createBuilding, type Building } from '../../services/realEstateService'
 import { useSocket } from '../../contexts/SocketContext'
+import GoogleMapComponent from '../../components/maps/GoogleMap'
+import MapFilters from '../../components/maps/MapFilters'
 
 interface BuildingsStats {
   totalBuildings: number
@@ -49,6 +51,34 @@ export default function AdminBuildings() {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedCity, setSelectedCity] = useState<string>('')
   const [selectedStatus, setSelectedStatus] = useState<string>('')
+  
+  // État pour la carte
+  const [showMap, setShowMap] = useState(false)
+  const [selectedBuildingId, setSelectedBuildingId] = useState<string | undefined>()
+  const [mapFilters, setMapFilters] = useState({
+    status: undefined as string | undefined,
+    city: undefined as string | undefined,
+    minPrice: undefined as number | undefined,
+    maxPrice: undefined as number | undefined
+  })
+  
+  // Modal d'ajout d'immeuble
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [formData, setFormData] = useState({
+    name: '',
+    address: {
+      street: '',
+      city: '',
+      province: '',
+      postalCode: '',
+      country: 'Canada'
+    },
+    yearBuilt: '',
+    description: '',
+    isActive: true
+  })
   
   // Charger les stats des immeubles
   const loadBuildingsStats = useCallback(async () => {
@@ -253,6 +283,15 @@ export default function AdminBuildings() {
     loadBuildings()
   }, [authLoading, isAuthenticated, authUser, loadBuildings, router])
   
+  // Détecter le paramètre action=add dans l'URL
+  useEffect(() => {
+    if (router.isReady && router.query.action === 'add') {
+      setShowAddModal(true)
+      // Nettoyer l'URL
+      router.replace('/admin/buildings', undefined, { shallow: true })
+    }
+  }, [router.isReady, router.query.action, router])
+  
   // Synchronisation Socket.io en temps réel
   useEffect(() => {
     if (!socket || !isConnected) {
@@ -385,6 +424,128 @@ export default function AdminBuildings() {
     setSelectedStatus('')
   }
   
+  // Gérer l'ouverture/fermeture du modal
+  const handleOpenAddModal = () => {
+    setShowAddModal(true)
+    setFormError(null)
+    setFormData({
+      name: '',
+      address: {
+        street: '',
+        city: '',
+        province: '',
+        postalCode: '',
+        country: 'Canada'
+      },
+      yearBuilt: '',
+      description: '',
+      isActive: true
+    })
+  }
+  
+  const handleCloseAddModal = () => {
+    setShowAddModal(false)
+    setFormError(null)
+    setFormData({
+      name: '',
+      address: {
+        street: '',
+        city: '',
+        province: '',
+        postalCode: '',
+        country: 'Canada'
+      },
+      yearBuilt: '',
+      description: '',
+      isActive: true
+    })
+  }
+  
+  // Gérer la soumission du formulaire
+  const handleSubmitAddBuilding = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    setFormError(null)
+    
+    try {
+      // Validation
+      if (!formData.name.trim()) {
+        throw new Error('Le nom de l\'immeuble est requis')
+      }
+      if (!formData.address.street.trim()) {
+        throw new Error('L\'adresse est requise')
+      }
+      if (!formData.address.city.trim()) {
+        throw new Error('La ville est requise')
+      }
+      if (!formData.address.province.trim()) {
+        throw new Error('La province est requise')
+      }
+      if (!formData.address.postalCode.trim()) {
+        throw new Error('Le code postal est requis')
+      }
+      
+      // Préparer les données
+      const buildingData: any = {
+        name: formData.name.trim(),
+        address: {
+          street: formData.address.street.trim(),
+          city: formData.address.city.trim(),
+          province: formData.address.province.trim(),
+          postalCode: formData.address.postalCode.trim(),
+          country: formData.address.country || 'Canada'
+        },
+        isActive: formData.isActive
+      }
+      
+      if (formData.yearBuilt) {
+        const year = parseInt(formData.yearBuilt)
+        if (!isNaN(year) && year > 1800 && year <= new Date().getFullYear()) {
+          buildingData.yearBuilt = year
+        }
+      }
+      
+      if (formData.description.trim()) {
+        buildingData.description = formData.description.trim()
+      }
+      
+      // Créer l'immeuble
+      await createBuilding(buildingData)
+      
+      // Fermer le modal et recharger la liste
+      handleCloseAddModal()
+      await loadBuildings(true)
+      await loadBuildingsStats()
+      
+      // Afficher un message de succès (optionnel)
+      console.log('[AdminBuildings] ✅ Immeuble créé avec succès')
+    } catch (err: any) {
+      console.error('[AdminBuildings] ❌ Erreur création immeuble:', err)
+      setFormError(err.message || 'Erreur lors de la création de l\'immeuble')
+    } finally {
+      setSaving(false)
+    }
+  }
+  
+  // Gérer les changements dans le formulaire
+  const handleFormChange = (field: string, value: any) => {
+    if (field.startsWith('address.')) {
+      const addressField = field.replace('address.', '')
+      setFormData(prev => ({
+        ...prev,
+        address: {
+          ...prev.address,
+          [addressField]: value
+        }
+      }))
+    } else {
+      setFormData(prev => ({
+        ...prev,
+        [field]: value
+      }))
+    }
+  }
+  
   if (loading && buildingsList.length === 0) {
     return (
       <ProtectedRoute requiredRoles={['admin']}>
@@ -423,9 +584,12 @@ export default function AdminBuildings() {
                 >
                   {refreshing ? '🔄 Actualisation...' : '🔄 Actualiser'}
                 </button>
-                <Link href="/admin/buildings?action=add" className="btn-primary">
+                <button
+                  onClick={handleOpenAddModal}
+                  className="btn-primary"
+                >
                   ➕ Ajouter un immeuble
-                </Link>
+                </button>
               </div>
             </div>
           </div>
@@ -529,8 +693,72 @@ export default function AdminBuildings() {
             </div>
           </div>
           
+          {/* Onglets */}
+          <div className="mb-6 flex space-x-4 border-b border-gray-200">
+            <button
+              onClick={() => {
+                setShowMap(false)
+                const element = document.getElementById('buildings-list')
+                if (element) element.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              }}
+              className={`px-6 py-3 font-semibold transition-colors ${
+                !showMap
+                  ? 'text-primary-600 border-b-2 border-primary-600'
+                  : 'text-gray-600 hover:text-primary-600'
+              }`}
+            >
+              📋 Liste
+            </button>
+            <button
+              onClick={() => {
+                setShowMap(true)
+                const element = document.getElementById('map-section')
+                if (element) element.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              }}
+              className={`px-6 py-3 font-semibold transition-colors ${
+                showMap
+                  ? 'text-primary-600 border-b-2 border-primary-600'
+                  : 'text-gray-600 hover:text-primary-600'
+              }`}
+            >
+              🗺️ Carte
+            </button>
+          </div>
+
+          {/* Section Carte */}
+          {showMap && (
+            <section id="map-section" className="mb-8">
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold mb-4">Carte des immeubles</h2>
+                <MapFilters
+                  filters={mapFilters}
+                  cities={uniqueCities}
+                  onFilterChange={setMapFilters}
+                />
+              </div>
+              
+              <div className="bg-white rounded-lg shadow-lg overflow-hidden">
+                <GoogleMapComponent
+                  buildings={filteredBuildings}
+                  height="600px"
+                  selectedBuildingId={selectedBuildingId}
+                  showFilters={true}
+                  filters={mapFilters}
+                  enableDirections={true}
+                  enableClustering={true}
+                  onBuildingClick={(building) => {
+                    setSelectedBuildingId(building._id)
+                    setShowMap(false)
+                    const element = document.getElementById('buildings-list')
+                    if (element) element.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                  }}
+                />
+              </div>
+            </section>
+          )}
+          
           {/* Résultats */}
-          <div className="mb-4">
+          <div id="buildings-list" className="mb-4">
             <p className="text-gray-600">
               <strong>{filteredBuildings.length}</strong> immeuble(s) trouvé(s)
               {buildingsStats.totalBuildings > 0 && (
@@ -704,6 +932,177 @@ export default function AdminBuildings() {
           )}
         </div>
       </div>
+      
+      {/* Modal d'ajout d'immeuble */}
+      {showAddModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold">➕ Ajouter un immeuble</h2>
+                <button
+                  onClick={handleCloseAddModal}
+                  className="text-gray-400 hover:text-gray-600 text-2xl"
+                  disabled={saving}
+                >
+                  ×
+                </button>
+              </div>
+              
+              {formError && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700">
+                  {formError}
+                </div>
+              )}
+              
+              <form onSubmit={handleSubmitAddBuilding}>
+                <div className="space-y-4">
+                  {/* Nom */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Nom de l'immeuble <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.name}
+                      onChange={(e) => handleFormChange('name', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      required
+                      disabled={saving}
+                    />
+                  </div>
+                  
+                  {/* Adresse */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Adresse (rue) <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.address.street}
+                      onChange={(e) => handleFormChange('address.street', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      required
+                      disabled={saving}
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    {/* Ville */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Ville <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.address.city}
+                        onChange={(e) => handleFormChange('address.city', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                        required
+                        disabled={saving}
+                      />
+                    </div>
+                    
+                    {/* Province */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Province <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.address.province}
+                        onChange={(e) => handleFormChange('address.province', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                        required
+                        disabled={saving}
+                      />
+                    </div>
+                  </div>
+                  
+                  {/* Code postal */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Code postal <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.address.postalCode}
+                      onChange={(e) => handleFormChange('address.postalCode', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      required
+                      disabled={saving}
+                    />
+                  </div>
+                  
+                  {/* Année de construction */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Année de construction
+                    </label>
+                    <input
+                      type="number"
+                      value={formData.yearBuilt}
+                      onChange={(e) => handleFormChange('yearBuilt', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      min="1800"
+                      max={new Date().getFullYear()}
+                      disabled={saving}
+                    />
+                  </div>
+                  
+                  {/* Description */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Description
+                    </label>
+                    <textarea
+                      value={formData.description}
+                      onChange={(e) => handleFormChange('description', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      rows={3}
+                      disabled={saving}
+                    />
+                  </div>
+                  
+                  {/* Statut actif */}
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="isActive"
+                      checked={formData.isActive}
+                      onChange={(e) => handleFormChange('isActive', e.target.checked)}
+                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                      disabled={saving}
+                    />
+                    <label htmlFor="isActive" className="ml-2 block text-sm text-gray-700">
+                      Immeuble actif
+                    </label>
+                  </div>
+                </div>
+                
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={handleCloseAddModal}
+                    className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+                    disabled={saving}
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn-primary"
+                    disabled={saving}
+                  >
+                    {saving ? '⏳ Création...' : '✅ Créer l\'immeuble'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+      
       <Footer />
     </ProtectedRoute>
   )

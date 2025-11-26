@@ -36,9 +36,24 @@ const documentSchema = new mongoose.Schema({
     required: [true, 'L\'utilisateur est requis']
   },
   category: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DocumentCategory',
+    default: null
+  },
+  // Ancien champ category pour compatibilité (deprecated)
+  categoryLegacy: {
     type: String,
     enum: ['contrat', 'facture', 'maintenance', 'reglement', 'autre'],
-    default: 'autre'
+    default: null
+  },
+  tags: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DocumentTag'
+  }],
+  folder: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DocumentFolder',
+    default: null
   },
   accessRoles: [{
     type: String,
@@ -53,6 +68,23 @@ const documentSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  version: {
+    type: Number,
+    default: 1
+  },
+  isArchived: {
+    type: Boolean,
+    default: false
+  },
+  archivedAt: {
+    type: Date,
+    default: null
+  },
+  metadata: {
+    type: Map,
+    of: mongoose.Schema.Types.Mixed,
+    default: {}
+  },
   createdAt: {
     type: Date,
     default: Date.now
@@ -62,6 +94,13 @@ const documentSchema = new mongoose.Schema({
     default: Date.now
   }
 });
+
+// Index pour recherche avancée
+documentSchema.index({ filename: 'text', originalName: 'text', description: 'text' });
+documentSchema.index({ building: 1, unit: 1, folder: 1 });
+documentSchema.index({ tags: 1 });
+documentSchema.index({ category: 1 });
+documentSchema.index({ isArchived: 1, createdAt: -1 });
 
 documentSchema.pre('save', function(next) {
   this.updatedAt = Date.now();

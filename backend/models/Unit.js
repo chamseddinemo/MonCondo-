@@ -123,14 +123,14 @@ unitSchema.pre('save', function(next) {
   next();
 });
 
-// Virtual pour obtenir l'URL de l'image (première image stockée ou générée automatiquement)
+// Virtual pour obtenir l'URL de l'image (uniquement images stockées par l'admin)
 unitSchema.virtual('imageUrl').get(function() {
+  // Retourner uniquement les images uploadées par l'admin
   if (this.images && this.images.length > 0) {
     return this.images[0];
   }
-  
-  const { getUnitImageUrl } = require('../utils/imageHelper');
-  return getUnitImageUrl(this);
+  // Pas d'image - retourner null (le frontend utilisera un placeholder)
+  return null;
 });
 
 // S'assurer que les virtuals sont inclus dans JSON

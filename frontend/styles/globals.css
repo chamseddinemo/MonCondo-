@@ -48,21 +48,55 @@
 
 @layer base {
   body {
-    @apply text-gray-900 bg-white;
+    @apply text-neutral-500 bg-concrete-400;
+  }
+
+  /* Transitions fluides pour la navigation */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Transitions pour les liens Next.js - instantané et fluide */
+  a {
+    transition: color 0.15s ease-in-out, background-color 0.15s ease-in-out, opacity 0.15s ease-in-out;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Optimisation des performances de navigation */
+  * {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Page transitions fluides */
+  .page-transition {
+    animation: fadeIn 0.2s ease-in-out;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
 }
 
 @layer components {
+  /* Bouton principal avec la couleur bleu nuit urbain */
   .btn-primary {
-    @apply bg-primary-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-primary-700 transition-colors duration-200 shadow-lg hover:shadow-xl;
+    @apply bg-primary-500 text-white px-6 py-3 rounded-lg font-semibold hover:bg-primary-600 transition-colors duration-200 shadow-lg hover:shadow-xl;
   }
   
+  /* Bouton secondaire avec accent or */
   .btn-secondary {
-    @apply bg-white text-primary-600 px-6 py-3 rounded-lg font-semibold border-2 border-primary-600 hover:bg-primary-50 transition-colors duration-200;
+    @apply bg-white text-primary-500 px-6 py-3 rounded-lg font-semibold border-2 border-primary-500 hover:bg-primary-50 hover:border-primary-600 transition-colors duration-200;
   }
   
+  /* Carte avec fond béton léger */
   .card {
-    @apply bg-white rounded-xl shadow-lg hover:shadow-2xl transition-shadow duration-300 overflow-hidden;
+    @apply bg-concrete-400 rounded-xl shadow-lg hover:shadow-2xl transition-shadow duration-300 overflow-hidden;
   }
 }
 

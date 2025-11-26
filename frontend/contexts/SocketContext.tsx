@@ -96,6 +96,11 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     })
 
     newSocket.on('connect_error', (error) => {
+      // Ignorer l'erreur "Invalid namespace" si l'utilisateur n'est pas authentifié
+      if (error.message.includes('Invalid namespace') || error.message.includes('Authentication')) {
+        console.log('[SOCKET] Connexion requiert authentification')
+        return
+      }
       console.error('[SOCKET] Erreur de connexion:', error.message)
       setIsConnected(false)
     })

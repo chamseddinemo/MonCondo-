@@ -15,6 +15,12 @@ async function getUnreadCount(userId, filters = {}) {
     };
     
     const count = await Message.countDocuments(query);
+    console.log('[MESSAGE SYNC] 📊 Compteur messages non lus:', {
+      userId,
+      count,
+      query,
+      filters
+    });
     return count;
   } catch (error) {
     console.error('[MESSAGE SYNC] Erreur calcul compteur non lus:', error);

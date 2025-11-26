@@ -9,22 +9,48 @@ exports.register = async (req, res) => {
   try {
     const { firstName, lastName, email, password, phone, role } = req.body;
 
+    // Validation des champs requis
+    if (!firstName || !lastName || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Veuillez remplir tous les champs requis (prénom, nom, email, mot de passe)'
+      });
+    }
+
+    // Validation de l'email
+    const emailRegex = /^\S+@\S+\.\S+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Format d\'email invalide'
+      });
+    }
+
+    // Validation du mot de passe (minimum 6 caractères)
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le mot de passe doit contenir au moins 6 caractères'
+      });
+    }
+
     // Vérifier si l'utilisateur existe déjà
-    const userExists = await User.findOne({ email });
+    const normalizedEmail = email.toLowerCase().trim();
+    const userExists = await User.findOne({ email: normalizedEmail });
     if (userExists) {
       return res.status(400).json({
         success: false,
-        message: 'Un utilisateur avec cet email existe déjà'
+        message: 'Un utilisateur avec cet email existe déjà. Si c\'est votre compte, connectez-vous plutôt que de créer un nouveau compte.'
       });
     }
 
     // Créer l'utilisateur
     const user = await User.create({
-      firstName,
-      lastName,
-      email,
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      email: email.toLowerCase().trim(),
       password,
-      phone,
+      phone: phone ? phone.trim() : undefined,
       role: role || 'visiteur'
     });
 
@@ -42,9 +68,29 @@ exports.register = async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('[REGISTER] Erreur:', error);
+    
+    // Gérer les erreurs de validation Mongoose
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(err => err.message).join(', ');
+      return res.status(400).json({
+        success: false,
+        message: messages || 'Erreur de validation des données'
+      });
+    }
+
+    // Gérer les erreurs de duplication (email unique)
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Un utilisateur avec cet email existe déjà'
+      });
+    }
+
+    // Erreur générique
     res.status(500).json({
       success: false,
-      message: error.message
+      message: error.message || 'Erreur lors de l\'inscription. Veuillez réessayer.'
     });
   }
 };

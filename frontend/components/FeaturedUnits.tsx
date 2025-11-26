@@ -48,15 +48,30 @@ export default function FeaturedUnits() {
     loadUnits()
   }, [])
 
-  // Fonction pour obtenir le chemin de l'image
+  // Fonction pour obtenir le chemin de l'image (uniquement images uploadées)
   const getImagePath = (unit: Unit) => {
     if (unit.images && unit.images.length > 0) {
       const firstImage = unit.images[0]
+      // Remplacer Unsplash par une image locale
+      if (firstImage.includes('unsplash.com')) {
+        // Utiliser une image locale basée sur l'ID de l'unité
+        const unitImages = [
+          'unites1.jpg', 'image2.jpeg', 'image3.jpeg', 'unite16.jpeg', 'unite17.jpeg',
+          'unite5.jpg', 'unites11.jpg', 'unites12.jpeg', 'unites13.jpg', 'unites14.jpeg',
+          'unites15.jpg', 'unites6.jpg', 'unites7.jpg', 'unites8.jpg', 'unites9.jpg'
+        ]
+        if (unit._id) {
+          const hash = unit._id.toString().split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+          const imageIndex = hash % unitImages.length
+          return `/images/unites/${unitImages[imageIndex]}`
+        }
+        return `/images/unites/${unitImages[0]}`
+      }
       // Si c'est un chemin local, le retourner tel quel
       if (firstImage.startsWith('/images/')) {
         return firstImage
       }
-      // Si c'est une URL externe, la retourner
+      // Si c'est une URL externe (mais pas Unsplash), la retourner
       if (firstImage.startsWith('http')) {
         return firstImage
       }
@@ -64,6 +79,20 @@ export default function FeaturedUnits() {
       return `/images/unites/${firstImage}`
     }
     if (unit.imageUrl) {
+      // Remplacer Unsplash par une image locale
+      if (unit.imageUrl.includes('unsplash.com')) {
+        const unitImages = [
+          'unites1.jpg', 'image2.jpeg', 'image3.jpeg', 'unite16.jpeg', 'unite17.jpeg',
+          'unite5.jpg', 'unites11.jpg', 'unites12.jpeg', 'unites13.jpg', 'unites14.jpeg',
+          'unites15.jpg', 'unites6.jpg', 'unites7.jpg', 'unites8.jpg', 'unites9.jpg'
+        ]
+        if (unit._id) {
+          const hash = unit._id.toString().split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+          const imageIndex = hash % unitImages.length
+          return `/images/unites/${unitImages[imageIndex]}`
+        }
+        return `/images/unites/${unitImages[0]}`
+      }
       if (unit.imageUrl.startsWith('http')) {
         return unit.imageUrl
       }
@@ -72,8 +101,18 @@ export default function FeaturedUnits() {
       }
       return `/images/unites/${unit.imageUrl}`
     }
-    // Fallback vers une image par défaut
-    return '/images/default/placeholder.jpg'
+    // Fallback : utiliser une image locale basée sur l'ID
+    const unitImages = [
+      'unites1.jpg', 'image2.jpeg', 'image3.jpeg', 'unite16.jpeg', 'unite17.jpeg',
+      'unite5.jpg', 'unites11.jpg', 'unites12.jpeg', 'unites13.jpg', 'unites14.jpeg',
+      'unites15.jpg', 'unites6.jpg', 'unites7.jpg', 'unites8.jpg', 'unites9.jpg'
+    ]
+    if (unit._id) {
+      const hash = unit._id.toString().split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+      const imageIndex = hash % unitImages.length
+      return `/images/unites/${unitImages[imageIndex]}`
+    }
+    return `/images/unites/${unitImages[0]}`
   }
 
   // Formater le prix
@@ -137,8 +176,7 @@ export default function FeaturedUnits() {
           {units.map((unit) => (
             <div
               key={unit._id}
-              className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-2 cursor-pointer"
-              onClick={() => router.push('/explorer')}
+              className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-2"
             >
               {/* Image */}
               <div className="relative h-64 bg-gradient-to-br from-primary-400 to-primary-600">
@@ -198,15 +236,43 @@ export default function FeaturedUnits() {
                 </div>
 
                 {/* Button */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    router.push('/explorer')
-                  }}
-                  className="w-full mt-4 btn-primary"
-                >
-                  En savoir plus
-                </button>
+                {unit._id ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      const targetUrl = `/units/${unit._id}`
+                      console.log('[FEATURED_UNITS] 🚀 Navigation vers:', targetUrl, 'Unit ID:', unit._id)
+                      
+                      try {
+                        router.push(targetUrl).then(() => {
+                          console.log('[FEATURED_UNITS] ✅ Navigation réussie avec router.push()')
+                        }).catch((err) => {
+                          console.error('[FEATURED_UNITS] ❌ Erreur router.push():', err)
+                          console.log('[FEATURED_UNITS] 🔄 Tentative avec window.location.href')
+                          window.location.href = targetUrl
+                        })
+                      } catch (error) {
+                        console.error('[FEATURED_UNITS] ❌ Erreur dans onClick:', error)
+                        window.location.href = targetUrl
+                      }
+                    }}
+                    className="w-full mt-4 btn-primary block text-center"
+                  >
+                    En savoir plus
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled
+                    className="w-full mt-4 btn-primary block text-center opacity-50 cursor-not-allowed"
+                    title="ID d'unité manquant"
+                    onClick={() => console.warn('[FEATURED_UNITS] ⚠️ Tentative de navigation avec ID manquant')}
+                  >
+                    En savoir plus
+                  </button>
+                )}
               </div>
             </div>
           ))}

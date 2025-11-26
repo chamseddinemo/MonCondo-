@@ -45,10 +45,18 @@ export default function Header() {
     }`}>
       <nav className="container mx-auto px-4 py-3">
         <div className="flex items-center justify-between">
-          {/* Logo - Redirige vers dashboard pour propriétaires et locataires */}
+          {/* Logo - Redirige vers dashboard selon le rôle */}
           <Link 
-            href={isAuthenticated && user && (user.role === 'proprietaire' || user.role === 'locataire') ? '/dashboard' : '/'} 
-            className="flex items-center space-x-2"
+            href={
+              isAuthenticated && user 
+                ? (user.role === 'proprietaire' || user.role === 'locataire' || user.role === 'admin') 
+                  ? '/dashboard' 
+                  : user.role === 'visiteur' 
+                    ? '/dashboard/visiteur'
+                    : '/'
+                : '/'
+            } 
+            className="flex items-center space-x-2 hover:opacity-80 transition-opacity duration-150"
           >
             <div className="text-3xl">🏢</div>
             <span className="text-2xl font-bold text-primary-600">MonCondo+</span>
@@ -59,23 +67,23 @@ export default function Header() {
             {/* Menu pour propriétaire */}
             {isAuthenticated && user && user.role === 'proprietaire' ? (
               <>
-                <Link href="/dashboard" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/dashboard" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Mon Tableau
                 </Link>
-                <Link href="/proprietaire/mes-unites" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/proprietaire/mes-unites" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Mes Unités
                 </Link>
-                <Link href="/proprietaire/services" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/proprietaire/services" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Services
                 </Link>
-                <Link href="/proprietaire/consult-units" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/proprietaire/consult-units" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Unités Disponibles
                 </Link>
-                <Link href="/messages" className="relative text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/messages" prefetch className="relative text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   💬 Messagerie
-                  {notificationStats.totalUnread > 0 && (
-                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                      {notificationStats.totalUnread}
+                  {notificationStats.byType.message > 0 && (
+                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full min-w-[20px] px-1.5 h-5 flex items-center justify-center">
+                      {notificationStats.byType.message > 99 ? '99+' : notificationStats.byType.message}
                     </span>
                   )}
                 </Link>
@@ -97,7 +105,8 @@ export default function Header() {
                     <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-xl border border-gray-200 py-2 z-50">
                       <Link
                         href="/dashboard"
-                        className="block px-4 py-2 text-gray-700 hover:bg-gray-100 transition-colors"
+                        prefetch
+                        className="block px-4 py-2 text-gray-700 hover:bg-gray-100 transition-colors duration-150"
                         onClick={() => setShowUserMenu(false)}
                       >
                         Mon Tableau de Bord
@@ -125,23 +134,23 @@ export default function Header() {
               </>
             ) : isAuthenticated && user && user.role === 'admin' ? (
               <>
-                <Link href="/dashboard" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/dashboard" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Mon Tableau
                 </Link>
-                <Link href="/admin/units" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/admin/units" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Immeubles & Unités
                 </Link>
-                <Link href="/services" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/services" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Services
                 </Link>
-                <Link href="/community" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/community" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Communauté
                 </Link>
-                <Link href="/messages" className="relative text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/messages" prefetch className="relative text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   💬 Messagerie
-                  {notificationStats.totalUnread > 0 && (
-                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                      {notificationStats.totalUnread}
+                  {notificationStats.byType.message > 0 && (
+                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full min-w-[20px] px-1.5 h-5 flex items-center justify-center">
+                      {notificationStats.byType.message > 99 ? '99+' : notificationStats.byType.message}
                     </span>
                   )}
                 </Link>
@@ -196,9 +205,9 @@ export default function Header() {
                 >
                   <span className="text-xl">💬</span>
                   <span>Messagerie</span>
-                  {notificationStats.totalUnread > 0 && (
-                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                      {notificationStats.totalUnread}
+                  {notificationStats.byType.message > 0 && (
+                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full min-w-[20px] px-1.5 h-5 flex items-center justify-center">
+                      {notificationStats.byType.message > 99 ? '99+' : notificationStats.byType.message}
                     </span>
                   )}
                 </Link>
@@ -254,31 +263,66 @@ export default function Header() {
                   )}
                 </div>
               </>
+            ) : isAuthenticated && user && user.role === 'visiteur' ? (
+              <>
+                {/* Menu pour visiteur connecté */}
+                <Link href="/dashboard/visiteur" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
+                  Mon Dashboard
+                </Link>
+                <Link href="/explorer" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
+                  Explorer
+                </Link>
+                <Link href="/request" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
+                  Faire une demande
+                </Link>
+                {(user.role === 'admin' || user.role === 'proprietaire' || user.role === 'visiteur') && (
+                  <Link href="/loans/calculator" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
+                    💰 Calculatrice de prêt
+                  </Link>
+                )}
+                
+                {/* Menu utilisateur avec déconnexion */}
+                <div className="flex items-center space-x-4">
+                  <div className="flex items-center space-x-2">
+                    <div className="w-8 h-8 bg-primary-600 rounded-full flex items-center justify-center text-white font-bold">
+                      {user.firstName.charAt(0)}
+                    </div>
+                    <span className="text-gray-700 font-medium hidden lg:inline">{user.firstName} {user.lastName}</span>
+                  </div>
+                  <button 
+                    onClick={logout}
+                    className="text-gray-700 hover:text-red-600 font-medium transition-colors duration-150 flex items-center space-x-1 px-3 py-2 rounded-lg hover:bg-red-50"
+                  >
+                    <span>🚪</span>
+                    <span>Déconnexion</span>
+                  </button>
+                </div>
+              </>
             ) : (
               <>
                 {/* Menu public */}
-                <Link href="/" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/" className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Accueil
                 </Link>
-                <Link href="/explorer" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/explorer" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Immeubles & Unités
                 </Link>
-                <Link href="/services" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/services" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Services
                 </Link>
-                <Link href="/community" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/community" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Communauté
                 </Link>
-                <Link href="/contact" className="text-gray-700 hover:text-primary-600 font-medium transition-colors">
+                <Link href="/contact" prefetch className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150">
                   Contact
                 </Link>
                 <button 
                   onClick={() => router.push('/login')}
-                  className="text-gray-700 hover:text-primary-600 font-medium transition-colors"
+                  className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-150"
                 >
                   Connexion
                 </button>
-                <Link href="/request" className="btn-primary">
+                <Link href="/request" prefetch className="btn-primary">
                   Demander une unité
                 </Link>
               </>
@@ -424,6 +468,56 @@ export default function Header() {
                   </button>
                 </div>
               </>
+            ) : isAuthenticated && user && user.role === 'visiteur' ? (
+              <>
+                {/* Menu mobile pour visiteur connecté */}
+                <Link 
+                  href="/dashboard/visiteur" 
+                  className="flex items-center space-x-2 text-gray-700 hover:text-primary-600 py-2 px-3 rounded-lg hover:bg-gray-50 transition-all duration-200"
+                  onClick={() => setIsMenuOpen(false)}
+                >
+                  <span className="text-xl">📊</span>
+                  <span>Mon Dashboard</span>
+                </Link>
+                <Link 
+                  href="/explorer" 
+                  className="flex items-center space-x-2 text-gray-700 hover:text-primary-600 py-2 px-3 rounded-lg hover:bg-gray-50 transition-all duration-200"
+                  onClick={() => setIsMenuOpen(false)}
+                >
+                  <span className="text-xl">🔍</span>
+                  <span>Explorer</span>
+                </Link>
+                <Link 
+                  href="/request" 
+                  className="flex items-center space-x-2 text-gray-700 hover:text-primary-600 py-2 px-3 rounded-lg hover:bg-gray-50 transition-all duration-200"
+                  onClick={() => setIsMenuOpen(false)}
+                >
+                  <span className="text-xl">📝</span>
+                  <span>Faire une demande</span>
+                </Link>
+                
+                <div className="pt-4 border-t border-gray-200 mt-4">
+                  <div className="flex items-center space-x-3 px-3 py-3 bg-gradient-to-r from-primary-50 to-primary-100 rounded-lg mb-4">
+                    <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-primary-700 rounded-full flex items-center justify-center text-white font-bold">
+                      {user.firstName.charAt(0)}{user.lastName.charAt(0)}
+                    </div>
+                    <div>
+                      <p className="font-semibold text-gray-900">{user.firstName} {user.lastName}</p>
+                      <p className="text-sm text-gray-600 capitalize">Visiteur</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setIsMenuOpen(false)
+                      logout()
+                    }}
+                    className="w-full flex items-center space-x-2 text-left px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                  >
+                    <span className="text-xl">🚪</span>
+                    <span>Déconnexion</span>
+                  </button>
+                </div>
+              </>
             ) : (
               <>
                 <Link href="/" className="block text-gray-700 hover:text-primary-600">Accueil</Link>
@@ -431,7 +525,14 @@ export default function Header() {
                 <Link href="/services" className="block text-gray-700 hover:text-primary-600">Services</Link>
                 <Link href="/community" className="block text-gray-700 hover:text-primary-600">Communauté</Link>
                 <Link href="/contact" className="block text-gray-700 hover:text-primary-600">Contact</Link>
-                <button onClick={() => router.push('/login')} className="block w-full text-left text-gray-700 hover:text-primary-600">
+                <button 
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    router.push('/login')
+                  }} 
+                  className="block w-full text-left text-gray-700 hover:text-primary-600"
+                >
                   Connexion
                 </button>
                 <Link href="/request" className="btn-primary w-full block text-center">

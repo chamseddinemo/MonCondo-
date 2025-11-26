@@ -33,6 +33,9 @@ const io = new Server(server, {
 // Stocker io dans app.set pour accès dans les routes
 app.set('io', io);
 
+// Stocker aussi dans global pour accès dans les contrôleurs
+global.io = io;
+
 // Middleware pour authentifier les connexions Socket.io
 io.use(async (socket, next) => {
   try {
@@ -237,6 +240,11 @@ io.on('connection', (socket) => {
     connectedAt: new Date()
   });
 
+  // Rejoindre automatiquement la room de l'utilisateur pour recevoir les notifications personnalisées
+  // Cette room est utilisée pour envoyer des événements spécifiques à un utilisateur (ex: paymentCreated)
+  socket.join(`user_${socket.userId}`);
+  console.log(`[SOCKET] ✅ ${socket.userId} a rejoint la room user_${socket.userId} pour recevoir les notifications personnalisées`);
+
   // Notifier les autres utilisateurs de la connexion
   socket.broadcast.emit('user:online', {
     userId: socket.userId,
@@ -431,6 +439,10 @@ console.log('[SERVER] 🔓 Chargement des routes publiques...');
 app.use('/api/public', require('./routes/publicRoutes'));
 console.log('[SERVER] ✅ Routes publiques montées sur /api/public');
 
+// Route de contact (publique)
+app.use('/api/contact', require('./routes/contactRoutes'));
+console.log('[SERVER] ✅ Routes de contact montées sur /api/contact');
+
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/users', require('./routes/userRoutes'));
 
@@ -525,12 +537,17 @@ if (requestRoutes && requestRoutes.stack) {
 app.use('/api/documents', require('./routes/documentRoutes'));
 app.use('/api/messages', require('./routes/messageRoutes'));
 app.use('/api/conversations', require('./routes/conversationRoutes'));
+app.use('/api/exports', require('./routes/exportRoutes'));
+console.log('[SERVER] ✅ Routes d\'export montées sur /api/exports');
+app.use('/api/loans', require('./routes/loanRoutes'));
+console.log('[SERVER] ✅ Routes de calculatrice de prêt montées sur /api/loans');
 // Routes de paiement
 const paymentRoutes = require('./routes/paymentRoutes');
 app.use('/api/payments', paymentRoutes);
 console.log('[SERVER] ✅ Routes de paiement enregistrées: POST /api/payments (tous utilisateurs authentifiés)');
 app.use('/api/notifications', require('./routes/notificationRoutes'));
 app.use('/upload', require('./routes/uploadRoutes'));
+console.log('[SERVER] ✅ Routes d\'upload montées sur /upload');
 
 // Routes protégées par rôle (dashboards) - À placer APRÈS les routes spécifiques
 // pour éviter que dashboardRoutes n'intercepte les routes requests
@@ -617,6 +634,24 @@ app.use((req, res) => {
           console.error(`[404]    ⚠️ Vérifiez l'ordre des routes dans server.js`);
           console.error(`[404]    ⚠️ Vérifiez que le middleware d'authentification n'a pas bloqué la requête`);
         }
+        
+        // Vérifier spécifiquement la route generate-documents
+        if (req.originalUrl && req.originalUrl.includes('generate-documents')) {
+          const generateDocsRoute = requestRoutes.stack.find(layer => 
+            layer.route && 
+            layer.route.path === '/:id/generate-documents' && 
+            layer.route.methods.post
+          );
+          if (!generateDocsRoute) {
+            console.error(`[404]    ❌❌ Route POST /:id/generate-documents NON TROUVÉE dans requestRoutes!`);
+            console.error(`[404]    ⚠️ Le serveur doit être redémarré après les modifications.`);
+          } else {
+            console.error(`[404]    ⚠️ Route POST /:id/generate-documents existe mais n'a pas été matchée`);
+            console.error(`[404]    ⚠️ Vérifiez l'ordre des routes dans requestRoutes.js`);
+            console.error(`[404]    ⚠️ Vérifiez que le middleware d'authentification n'a pas bloqué la requête`);
+            console.error(`[404]    ⚠️ Vérifiez que l'URL est correcte: ${req.originalUrl}`);
+          }
+        }
       } else {
         console.error(`[404]    ❌ requestRoutes.stack est undefined ou null!`);
       }
@@ -652,11 +687,62 @@ app.use((req, res) => {
 
 // Gestion des erreurs globales
 app.use((err, req, res, next) => {
-  console.error('[ERROR]', err.stack);
-  res.status(err.statusCode || 500).json({
+  console.error('[ERROR] ❌ Erreur globale capturée:');
+  console.error('[ERROR]    Message:', err.message);
+  console.error('[ERROR]    Status Code:', err.statusCode || 500);
+  console.error('[ERROR]    URL:', req.originalUrl);
+  console.error('[ERROR]    Method:', req.method);
+  console.error('[ERROR]    Stack:', err.stack);
+  
+  // Si c'est une erreur de validation Mongoose
+  if (err.name === 'ValidationError') {
+    const messages = Object.values(err.errors).map(e => e.message).join(', ');
+    return res.status(400).json({
+      success: false,
+      message: `Erreur de validation: ${messages}`,
+      errors: err.errors
+    });
+  }
+  
+  // Si c'est une erreur de cast Mongoose (ID invalide)
+  if (err.name === 'CastError') {
+    return res.status(400).json({
+      success: false,
+      message: `ID invalide: ${err.message}`,
+      path: err.path
+    });
+  }
+  
+  // Si c'est une erreur JWT
+  if (err.name === 'JsonWebTokenError') {
+    return res.status(401).json({
+      success: false,
+      message: 'Token invalide. Veuillez vous reconnecter.'
+    });
+  }
+  
+  // Si c'est une erreur JWT expiré
+  if (err.name === 'TokenExpiredError') {
+    return res.status(401).json({
+      success: false,
+      message: 'Token expiré. Veuillez vous reconnecter.'
+    });
+  }
+  
+  // Erreur générique
+  const statusCode = err.statusCode || 500;
+  res.status(statusCode).json({
     success: false,
-    message: err.message || 'Erreur serveur',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    message: err.message || 'Erreur serveur. Le serveur est en cours d\'exécution mais n\'a pas pu traiter votre demande.',
+    ...(process.env.NODE_ENV === 'development' && { 
+      stack: err.stack,
+      error: err.name,
+      details: {
+        url: req.originalUrl,
+        method: req.method,
+        timestamp: new Date().toISOString()
+      }
+    })
   });
 });
 

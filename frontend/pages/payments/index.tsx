@@ -11,19 +11,19 @@ export default function PaymentsIndex() {
   useEffect(() => {
     if (!loading) {
       if (!isAuthenticated) {
-        router.push('/login')
+        router.replace('/login')
         return
       }
 
-      // Rediriger selon le rôle
+      // Rediriger selon le rôle (utiliser replace pour éviter les retours)
       if (user?.role === 'locataire') {
-        router.push('/payments/locataire')
+        router.replace('/payments/locataire')
       } else if (user?.role === 'proprietaire') {
-        router.push('/payments/proprietaire')
+        router.replace('/payments/proprietaire')
       } else if (user?.role === 'admin') {
-        router.push('/payments/admin')
+        router.replace('/payments/admin')
       } else {
-        router.push('/dashboard')
+        router.replace('/dashboard')
       }
     }
   }, [user, isAuthenticated, loading, router])
@@ -33,8 +33,7 @@ export default function PaymentsIndex() {
       <Header />
       <div className="min-h-screen bg-gray-50 pt-20 flex items-center justify-center">
         <div className="text-center">
-          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
-          <p className="text-gray-600">Redirection en cours...</p>
+          <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
         </div>
       </div>
       <Footer />

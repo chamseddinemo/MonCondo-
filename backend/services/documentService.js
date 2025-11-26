@@ -254,9 +254,20 @@ async function generateSaleAgreement(request, unit, building, buyer, seller) {
     doc.fontSize(14).text('CONDITIONS DE VENTE', { underline: true });
     doc.moveDown(0.5);
     doc.fontSize(11);
-    doc.text(`Prix de vente: ${unit.salePrice.toFixed(2)} $CAD`);
-    doc.text(`Acompte (10%): ${(unit.salePrice * 0.1).toFixed(2)} $CAD`);
-    doc.text(`Solde restant: ${(unit.salePrice * 0.9).toFixed(2)} $CAD`);
+    
+    // Calculer le prix de vente (utiliser salePrice si disponible, sinon utiliser rentPrice * 12 ou une valeur par défaut)
+    let salePrice = unit.salePrice;
+    if (!salePrice || salePrice === 0) {
+      if (unit.rentPrice && unit.rentPrice > 0) {
+        salePrice = unit.rentPrice * 12; // Utiliser 12 mois de loyer comme prix de vente
+      } else {
+        salePrice = 100000; // Prix par défaut
+      }
+    }
+    
+    doc.text(`Prix de vente: ${salePrice.toFixed(2)} $CAD`);
+    doc.text(`Acompte (10%): ${(salePrice * 0.1).toFixed(2)} $CAD`);
+    doc.text(`Solde restant: ${(salePrice * 0.9).toFixed(2)} $CAD`);
     doc.moveDown();
 
     // Conditions générales

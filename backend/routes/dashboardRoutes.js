@@ -404,15 +404,69 @@ router.get('/proprietaire/dashboard', protect, roleAuth('proprietaire'), async (
       Unit.countDocuments({ proprietaire: req.user._id, status: 'disponible' }),
       Unit.countDocuments({ proprietaire: req.user._id, status: 'loue' }),
       // Utiliser le service centralisé pour les statistiques de demandes du propriétaire
+      // Inclure : 1) Les demandes créées par le propriétaire, 2) Les demandes pour ses unités
       (async () => {
-        const { calculateRequestStats } = require('../services/requestSyncService');
-        const stats = await calculateRequestStats({ createdBy: req.user._id });
-        return stats.total || 0;
+        const Request = require('../models/Request');
+        const { getRequestsUnified } = require('../services/requestSyncService');
+        
+        // Récupérer toutes les demandes (créées par lui ou pour ses unités)
+        let allRequests = [];
+        
+        // Demandes créées par le propriétaire
+        const requestsAsRequester = await getRequestsUnified(req.user, {
+          createdBy: req.user._id,
+          type: { $in: ['location', 'achat'] }
+        });
+        
+        // Demandes pour les unités du propriétaire
+        if (unitIds.length > 0) {
+          const requestsAsOwner = await getRequestsUnified(req.user, {
+            unit: { $in: unitIds },
+            type: { $in: ['location', 'achat'] }
+          });
+          allRequests = [...requestsAsRequester, ...requestsAsOwner];
+        } else {
+          allRequests = requestsAsRequester;
+        }
+        
+        // Dédupliquer par _id
+        const uniqueRequests = allRequests.filter((req, index, self) => 
+          index === self.findIndex(r => r._id && r._id.toString() === req._id.toString())
+        );
+        
+        return uniqueRequests.length;
       })(),
       (async () => {
-        const { calculateRequestStats } = require('../services/requestSyncService');
-        const stats = await calculateRequestStats({ createdBy: req.user._id });
-        return stats.pending || 0;
+        const { getRequestsUnified } = require('../services/requestSyncService');
+        
+        // Récupérer toutes les demandes en attente (créées par lui ou pour ses unités)
+        let allRequests = [];
+        
+        // Demandes créées par le propriétaire
+        const requestsAsRequester = await getRequestsUnified(req.user, {
+          createdBy: req.user._id,
+          type: { $in: ['location', 'achat'] },
+          status: 'en_attente'
+        });
+        
+        // Demandes pour les unités du propriétaire
+        if (unitIds.length > 0) {
+          const requestsAsOwner = await getRequestsUnified(req.user, {
+            unit: { $in: unitIds },
+            type: { $in: ['location', 'achat'] },
+            status: 'en_attente'
+          });
+          allRequests = [...requestsAsRequester, ...requestsAsOwner];
+        } else {
+          allRequests = requestsAsRequester;
+        }
+        
+        // Dédupliquer par _id
+        const uniqueRequests = allRequests.filter((req, index, self) => 
+          index === self.findIndex(r => r._id && r._id.toString() === req._id.toString())
+        );
+        
+        return uniqueRequests.length;
       })(),
       // Paiements reçus (payés) - Utiliser le service centralisé
       unitIds.length > 0 ? (async () => {
@@ -446,38 +500,101 @@ router.get('/proprietaire/dashboard', protect, roleAuth('proprietaire'), async (
         const requests = await getRequestsUnified(req.user, { createdBy: req.user._id });
         return requests.slice(0, 5);
       })(),
-      // Récupérer les candidatures (demandes de location/achat) pour les unités du propriétaire - Utiliser le service centralisé
-      unitIds.length > 0 ? (async () => {
+      // Récupérer les candidatures (demandes de location/achat) pour les unités du propriétaire OU créées par lui - Utiliser le service centralisé
+      (async () => {
         const { getRequestsUnified } = require('../services/requestSyncService');
-        const requests = await getRequestsUnified(req.user, {
-          unit: { $in: unitIds },
+        
+        // Récupérer les demandes pour les unités du propriétaire
+        let requestsAsOwner = [];
+        if (unitIds.length > 0) {
+          requestsAsOwner = await getRequestsUnified(req.user, {
+            unit: { $in: unitIds },
+            type: { $in: ['location', 'achat'] },
+            status: { $in: ['en_attente', 'accepte', 'refuse'] }
+          });
+        }
+        
+        // Récupérer les demandes créées par le propriétaire lui-même (même s'il était visiteur avant)
+        const requestsAsRequester = await getRequestsUnified(req.user, {
+          createdBy: req.user._id,
           type: { $in: ['location', 'achat'] },
           status: { $in: ['en_attente', 'accepte', 'refuse'] }
         });
-        return requests.slice(0, 20);
-      })() : Promise.resolve([]),
-      // Récupérer les demandes acceptées avec documents à signer pour le propriétaire - Utiliser le service centralisé
-      unitIds.length > 0 ? (async () => {
+        
+        // Combiner et dédupliquer par _id
+        const allRequests = [...requestsAsOwner, ...requestsAsRequester];
+        const uniqueRequests = allRequests.filter((req, index, self) => 
+          index === self.findIndex(r => r._id && r._id.toString() === req._id.toString())
+        );
+        
+        return uniqueRequests.slice(0, 20);
+      })(),
+      // Récupérer les demandes acceptées avec documents à signer pour le propriétaire
+      // Inclure : 1) Les demandes où il est propriétaire de l'unité, 2) Les demandes qu'il a créées
+      (async () => {
         const { getRequestsUnified } = require('../services/requestSyncService');
-        const requests = await getRequestsUnified(req.user, {
-          unit: { $in: unitIds },
+        const Request = require('../models/Request');
+        
+        // Récupérer les demandes où le propriétaire est propriétaire de l'unité
+        let requestsAsOwner = [];
+        if (unitIds.length > 0) {
+          requestsAsOwner = await getRequestsUnified(req.user, {
+            unit: { $in: unitIds },
+            type: { $in: ['location', 'achat'] },
+            status: 'accepte'
+          });
+        }
+        
+        // Récupérer les demandes créées par le propriétaire lui-même
+        const requestsAsRequester = await getRequestsUnified(req.user, {
+          createdBy: req.user._id,
           type: { $in: ['location', 'achat'] },
           status: 'accepte'
         });
-        // Filtrer celles qui ont des documents générés
-        return requests.filter(r => r.generatedDocuments && r.generatedDocuments.length > 0);
-      })() : Promise.resolve([]),
-      // Récupérer les paiements initiaux en attente pour les demandes acceptées - Utiliser le service centralisé
-      unitIds.length > 0 ? (async () => {
+        
+        // Combiner et dédupliquer par _id
+        const allRequests = [...requestsAsOwner, ...requestsAsRequester];
+        const uniqueRequests = allRequests.filter((req, index, self) => 
+          index === self.findIndex(r => r._id && r._id.toString() === req._id.toString())
+        );
+        
+        // Retourner toutes les demandes acceptées avec documents générés (pas seulement celles avec documents non signés)
+        // Le frontend affichera toutes les demandes et calculera le nombre de documents non signés
+        return uniqueRequests.filter(r => {
+          return r.generatedDocuments && r.generatedDocuments.length > 0;
+        });
+      })(),
+      // Récupérer les paiements initiaux en attente pour les demandes acceptées
+      // Inclure : 1) Les demandes où il est propriétaire de l'unité, 2) Les demandes qu'il a créées
+      (async () => {
         const { getRequestsUnified } = require('../services/requestSyncService');
-        const requests = await getRequestsUnified(req.user, {
-          unit: { $in: unitIds },
+        
+        // Récupérer les demandes où le propriétaire est propriétaire de l'unité
+        let requestsAsOwner = [];
+        if (unitIds.length > 0) {
+          requestsAsOwner = await getRequestsUnified(req.user, {
+            unit: { $in: unitIds },
+            type: { $in: ['location', 'achat'] },
+            status: 'accepte'
+          });
+        }
+        
+        // Récupérer les demandes créées par le propriétaire lui-même
+        const requestsAsRequester = await getRequestsUnified(req.user, {
+          createdBy: req.user._id,
           type: { $in: ['location', 'achat'] },
           status: 'accepte'
         });
+        
+        // Combiner et dédupliquer par _id
+        const allRequests = [...requestsAsOwner, ...requestsAsRequester];
+        const uniqueRequests = allRequests.filter((req, index, self) => 
+          index === self.findIndex(r => r._id && r._id.toString() === req._id.toString())
+        );
+        
         // Filtrer celles qui ont un paiement initial en attente
-        return requests.filter(r => r.initialPayment && r.initialPayment.status === 'en_attente');
-      })() : Promise.resolve([])
+        return uniqueRequests.filter(r => r.initialPayment && r.initialPayment.status === 'en_attente');
+      })()
     ]);
 
     // Calculer les revenus mensuels estimés
@@ -506,7 +623,7 @@ router.get('/proprietaire/dashboard', protect, roleAuth('proprietaire'), async (
     });
 
     // Ajouter les informations de paiement et alertes à chaque unité, ainsi que les images
-    const { getUnitImageUrl, getBuildingImageUrl } = require('../utils/imageHelper');
+    // Plus besoin d'importer imageHelper - on utilise uniquement les images uploadées
     const unitsWithDetails = (myUnits || []).map(unit => {
       const unitPayments = paymentsByUnit[unit._id.toString()] || [];
       const paidThisMonth = unitPayments.filter(p => p.status === 'paye').reduce((sum, p) => sum + (p.amount || 0), 0);
@@ -519,10 +636,10 @@ router.get('/proprietaire/dashboard', protect, roleAuth('proprietaire'), async (
       return {
         ...unitObj,
         images: unitObj.images || [], // Inclure le tableau images
-        imageUrl: (unitObj.images && unitObj.images.length > 0) ? unitObj.images[0] : getUnitImageUrl(unitObj),
+        imageUrl: (unitObj.images && unitObj.images.length > 0) ? unitObj.images[0] : null,
         building: unitObj.building ? {
           ...unitObj.building,
-          imageUrl: unitObj.building.image || getBuildingImageUrl(unitObj.building)
+          imageUrl: unitObj.building.image || null
         } : unitObj.building,
         paidThisMonth,
         pendingPayment,
@@ -598,20 +715,32 @@ router.get('/proprietaire/dashboard', protect, roleAuth('proprietaire'), async (
           unit: app.unit,
           building: app.building
         })),
-        acceptedRequestsWithDocs: (acceptedRequestsWithDocs || []).map(r => ({
-          _id: r._id,
-          type: r.type,
-          title: r.title,
-          status: r.status,
-          createdAt: r.createdAt,
-          approvedAt: r.approvedAt,
-          unit: r.unit,
-          building: r.building,
-          createdBy: r.createdBy,
-          approvedBy: r.approvedBy,
-          generatedDocuments: r.generatedDocuments || [],
-          initialPayment: r.initialPayment || null
-        })),
+        acceptedRequestsWithDocs: (acceptedRequestsWithDocs || []).map(r => {
+          // S'assurer que createdBy est bien peuplé et accessible
+          const createdByData = r.createdBy ? {
+            _id: r.createdBy._id || r.createdBy,
+            firstName: r.createdBy.firstName || '',
+            lastName: r.createdBy.lastName || '',
+            email: r.createdBy.email || '',
+            phone: r.createdBy.phone || '',
+            role: r.createdBy.role || ''
+          } : null;
+          
+          return {
+            _id: r._id,
+            type: r.type,
+            title: r.title || r.description, // Utiliser description si title n'existe pas
+            status: r.status,
+            createdAt: r.createdAt,
+            approvedAt: r.approvedAt,
+            unit: r.unit,
+            building: r.building,
+            createdBy: createdByData,
+            approvedBy: r.approvedBy,
+            generatedDocuments: r.generatedDocuments || [],
+            initialPayment: r.initialPayment || null
+          };
+        }),
         pendingInitialPayments: (pendingInitialPayments || []).map(r => ({
           _id: r._id,
           type: r.type,
@@ -745,14 +874,14 @@ router.get('/locataire/dashboard', protect, roleAuth('locataire'), async (req, r
     console.log('[DASHBOARD LOCATAIRE] ✅ Statistiques calculées:', stats);
 
     // S'assurer que myUnit a une image si disponible
-    const { getUnitImageUrl, getBuildingImageUrl } = require('../utils/imageHelper');
+    // Plus besoin d'importer imageHelper - on utilise uniquement les images uploadées
     const myUnitWithImage = myUnit ? {
       ...myUnit,
       images: myUnit.images || [], // Inclure le tableau images
-      imageUrl: (myUnit.images && myUnit.images.length > 0) ? myUnit.images[0] : getUnitImageUrl(myUnit),
+      imageUrl: (myUnit.images && myUnit.images.length > 0) ? myUnit.images[0] : null,
       building: myUnit.building ? {
         ...myUnit.building,
-        imageUrl: myUnit.building.image || getBuildingImageUrl(myUnit.building)
+        imageUrl: myUnit.building.image || null
       } : myUnit.building
     } : null;
 
@@ -808,6 +937,98 @@ router.get('/locataire/my-unit', protect, roleAuth('locataire'), async (req, res
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération de votre unité',
+      error: error.message
+    });
+  }
+});
+
+// ============================================
+// ROUTE VISITEUR - Accès réservé aux visiteurs
+// ============================================
+router.get('/visiteur/dashboard', protect, roleAuth('visiteur'), async (req, res) => {
+  try {
+    const Request = require('../models/Request');
+    const Payment = require('../models/Payment');
+    const Notification = require('../models/Notification');
+
+    // Récupérer les demandes acceptées avec documents générés non signés
+    const acceptedRequestsWithDocs = await Request.find({
+      createdBy: req.user._id,
+      status: 'accepte',
+      generatedDocuments: { $exists: true, $ne: [] }
+    })
+      .populate('unit', 'unitNumber type size bedrooms rentPrice salePrice')
+      .populate('building', 'name address')
+      .populate('approvedBy', 'firstName lastName')
+      .sort({ approvedAt: -1 })
+      .lean();
+
+    // Filtrer pour ne garder que celles avec des documents non signés
+    const requestsWithUnsignedDocs = acceptedRequestsWithDocs.filter(req => {
+      return req.generatedDocuments && req.generatedDocuments.some(doc => !doc.signed || doc.signed === false);
+    });
+
+    // Récupérer les paiements en attente liés aux demandes
+    const pendingPayments = await Payment.find({
+      payer: req.user._id,
+      status: { $in: ['en_attente', 'en_retard'] },
+      requestId: { $exists: true }
+    })
+      .populate('unit', 'unitNumber')
+      .populate('building', 'name')
+      .populate('requestId', 'title type')
+      .sort({ dueDate: 1 })
+      .lean();
+
+    // Récupérer les notifications
+    const notifications = await Notification.find({ user: req.user._id })
+      .populate('sender', 'firstName lastName')
+      .populate('request', 'title type')
+      .populate('unit', 'unitNumber')
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+
+    // Récupérer toutes les demandes du visiteur pour les stats
+    const { getRequestsUnified } = require('../services/requestSyncService');
+    const { getPaymentsUnified } = require('../services/paymentSyncService');
+    
+    const allRequests = await getRequestsUnified(req.user, { createdBy: req.user._id });
+    const allPayments = await getPaymentsUnified(req.user, { payer: req.user._id });
+
+    const stats = {
+      totalRequests: allRequests.length,
+      pendingRequests: allRequests.filter(r => r.status === 'en_attente').length,
+      acceptedRequests: allRequests.filter(r => r.status === 'accepte').length,
+      documentsToSign: requestsWithUnsignedDocs.reduce((count, req) => {
+        const unsignedDocs = req.generatedDocuments.filter(doc => !doc.signed || doc.signed === false);
+        return count + unsignedDocs.length;
+      }, 0),
+      pendingPayments: pendingPayments.length,
+      totalPayments: allPayments.length
+    };
+
+    res.json({
+      success: true,
+      message: 'Bienvenue sur votre tableau de bord visiteur',
+      data: {
+        user: {
+          id: req.user._id,
+          name: `${req.user.firstName} ${req.user.lastName}`,
+          email: req.user.email,
+          role: req.user.role
+        },
+        stats: stats,
+        acceptedRequestsWithDocs: requestsWithUnsignedDocs,
+        pendingPayments: pendingPayments,
+        notifications: notifications || []
+      }
+    });
+  } catch (error) {
+    console.error('[VISITEUR DASHBOARD] Erreur:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur',
       error: error.message
     });
   }
@@ -885,6 +1106,7 @@ console.log('[DASHBOARD ROUTES] Routes dashboard chargées:', {
   '/admin/dashboard': 'GET',
   '/proprietaire/dashboard': 'GET',
   '/locataire/dashboard': 'GET',
+  '/visiteur/dashboard': 'GET',
   '/dashboard': 'GET',
   '/me': 'GET'
 });

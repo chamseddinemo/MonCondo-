@@ -112,8 +112,8 @@ async function syncAllRequestViews(requestId) {
     const request = await Request.findById(requestId)
       .populate('unit', 'unitNumber proprietaire locataire status')
       .populate('building', 'name admin')
-      .populate('createdBy', 'firstName lastName email')
-      .populate('assignedTo', 'firstName lastName email');
+      .populate('createdBy', 'firstName lastName email phone role')
+      .populate('assignedTo', 'firstName lastName email phone');
     
     if (!request) {
       console.error('[REQUEST SYNC] ❌ Demande non trouvée:', requestId);
@@ -313,8 +313,8 @@ async function getRequestsUnified(user, filters = {}) {
 async function getRequestsByStatus(status, filters = {}) {
   const query = { status, ...filters };
   return await Request.find(query)
-    .populate('createdBy', 'firstName lastName email')
-    .populate('assignedTo', 'firstName lastName email')
+    .populate('createdBy', 'firstName lastName email phone role')
+    .populate('assignedTo', 'firstName lastName email phone')
     .populate('unit', 'unitNumber')
     .populate('building', 'name')
     .sort({ createdAt: -1 })
@@ -343,8 +343,8 @@ async function getCompletedRequests(filters = {}) {
     status: { $in: ['termine', 'accepte'] },
     ...filters
   })
-    .populate('createdBy', 'firstName lastName email')
-    .populate('assignedTo', 'firstName lastName email')
+    .populate('createdBy', 'firstName lastName email phone role')
+    .populate('assignedTo', 'firstName lastName email phone')
     .populate('unit', 'unitNumber')
     .populate('building', 'name')
     .sort({ completedAt: -1, updatedAt: -1 })
@@ -360,8 +360,8 @@ async function getUrgentRequests(filters = {}) {
     status: { $nin: ['termine', 'refuse'] },
     ...filters
   })
-    .populate('createdBy', 'firstName lastName email')
-    .populate('assignedTo', 'firstName lastName email')
+    .populate('createdBy', 'firstName lastName email phone role')
+    .populate('assignedTo', 'firstName lastName email phone')
     .populate('unit', 'unitNumber')
     .populate('building', 'name')
     .sort({ createdAt: 1 }) // Les plus anciennes en premier

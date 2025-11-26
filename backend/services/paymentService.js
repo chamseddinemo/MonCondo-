@@ -444,6 +444,102 @@ async function markPaymentAsPaid(paymentId, paymentMethod, transactionId, notes)
     console.error('[PAYMENT] Erreur création notifications:', error);
   }
 
+  // Si le paiement est lié à une demande de location/achat, attribuer automatiquement l'unité
+  if (payment.requestId) {
+    try {
+      const Request = require('../models/Request');
+      const Unit = require('../models/Unit');
+      
+      const request = await Request.findById(payment.requestId)
+        .populate('unit', 'unitNumber proprietaire locataire')
+        .populate('createdBy', 'firstName lastName email role');
+      
+      if (request && request.unit && (request.type === 'location' || request.type === 'achat')) {
+        const unit = await Unit.findById(request.unit._id || request.unit);
+        
+        if (unit) {
+          // Vérifier que tous les documents sont signés
+          const allDocumentsSigned = request.generatedDocuments && 
+            request.generatedDocuments.length > 0 &&
+            request.generatedDocuments.every(doc => doc.signed === true);
+          
+          if (allDocumentsSigned) {
+            console.log('[PAYMENT SERVICE] 🔄 Attribution automatique de l\'unité après paiement...');
+            
+            if (request.type === 'location') {
+              // Attribuer comme locataire
+              unit.locataire = request.createdBy._id || request.createdBy;
+              unit.status = 'loue';
+              unit.isAvailable = false;
+              await unit.save();
+              console.log('[PAYMENT SERVICE] ✅ Unité assignée comme locataire:', unit.unitNumber);
+              
+              // Notifier le demandeur qu'il est maintenant locataire
+              const Notification = require('../models/Notification');
+              await Notification.create({
+                user: request.createdBy._id || request.createdBy,
+                type: 'contract',
+                title: '🎉 Unité assignée - Vous êtes maintenant locataire !',
+                content: `Félicitations ! Votre paiement a été confirmé et l'unité ${unit.unitNumber} vous a été assignée. Vous êtes maintenant locataire.`,
+                sender: payment.recipient?._id || payment.recipient,
+                request: request._id,
+                unit: unit._id,
+                building: request.building?._id || request.building,
+                payment: payment._id,
+                isRead: false
+              });
+            } else if (request.type === 'achat') {
+              // Attribuer comme propriétaire
+              unit.proprietaire = request.createdBy._id || request.createdBy;
+              unit.status = 'vendu';
+              unit.isAvailable = false;
+              // Libérer l'ancien locataire s'il y en a un
+              unit.locataire = null;
+              await unit.save();
+              console.log('[PAYMENT SERVICE] ✅ Unité assignée comme propriétaire:', unit.unitNumber);
+              
+              // Notifier le demandeur qu'il est maintenant propriétaire
+              const Notification = require('../models/Notification');
+              await Notification.create({
+                user: request.createdBy._id || request.createdBy,
+                type: 'contract',
+                title: '🎉 Unité assignée - Vous êtes maintenant propriétaire !',
+                content: `Félicitations ! Votre paiement a été confirmé et l'unité ${unit.unitNumber} vous appartient maintenant. Vous êtes maintenant propriétaire.`,
+                sender: payment.recipient?._id || payment.recipient,
+                request: request._id,
+                unit: unit._id,
+                building: request.building?._id || request.building,
+                payment: payment._id,
+                isRead: false
+              });
+            }
+            
+            // Mettre à jour le statut de la demande à 'termine'
+            request.status = 'termine';
+            request.completedAt = new Date();
+            if (!request.statusHistory) {
+              request.statusHistory = [];
+            }
+            request.statusHistory.push({
+              status: 'termine',
+              changedBy: payment.recipient?._id || payment.recipient,
+              changedAt: new Date(),
+              comment: 'Paiement confirmé - Unité assignée automatiquement'
+            });
+            await request.save();
+            
+            console.log('[PAYMENT SERVICE] ✅ Demande mise à jour - Statut: termine');
+          } else {
+            console.log('[PAYMENT SERVICE] ⚠️  Documents non tous signés - Attribution reportée');
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[PAYMENT SERVICE] ❌ Erreur attribution automatique unité (non bloquante):', error);
+      // Ne pas faire échouer le paiement si l'attribution échoue
+    }
+  }
+
   // Émettre un événement de synchronisation pour notifier le frontend
   try {
     const syncEvent = emitPaymentSyncEvent(payment);

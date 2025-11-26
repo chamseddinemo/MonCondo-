@@ -9,6 +9,8 @@ import ProtectedRoute from '../../components/ProtectedRoute'
 import { useAuth } from '../../contexts/AuthContext'
 import { usePayment } from '../../contexts/PaymentContext'
 import { usePaymentSync } from '../../hooks/usePaymentSync'
+import { useGlobalSync } from '../../hooks/useGlobalSync'
+import { useSocket } from '../../contexts/SocketContext'
 import ApplicationCard from '../../components/proprietaire/ApplicationCard'
 import { getUnitImagePath } from '../../utils/imageUtils'
 
@@ -170,8 +172,9 @@ interface PendingInitialPayment {
 }
 
 export default function ProprietaireDashboard() {
-  const { user: authUser } = useAuth()
+  const { user: authUser, loading: authLoading, isAuthenticated } = useAuth()
   const { refreshPaymentStatus } = usePayment()
+  const { socket, isConnected } = useSocket()
   const router = useRouter()
   const [dashboardData, setDashboardData] = useState<{
     stats: DashboardStats
@@ -269,7 +272,12 @@ export default function ProprietaireDashboard() {
         } else if (error.response.status === 404) {
           errorMessage = 'Route non trouvée. Vérifiez que le backend est démarré et que la route /api/proprietaire/dashboard existe.'
         } else if (error.response.status >= 500) {
-          errorMessage = 'Erreur serveur. Veuillez réessayer plus tard ou contacter le support.'
+          const serverMessage = error.response.data?.message || error.response.data?.error || '';
+          if (serverMessage.includes('Le serveur est en cours d\'exécution')) {
+            errorMessage = serverMessage;
+          } else {
+            errorMessage = `Erreur serveur (${error.response.status}): ${serverMessage || 'Le serveur est en cours d\'exécution mais n\'a pas pu traiter votre demande. Veuillez vérifier les logs du serveur backend.'}`;
+          }
         } else {
           errorMessage = error.response.data?.message || `Erreur ${error.response.status}: ${error.response.statusText}`
         }
@@ -308,6 +316,20 @@ export default function ProprietaireDashboard() {
       setLoading(false)
     }
   }
+
+  // Charger les données seulement après vérification de l'authentification
+  useEffect(() => {
+    // Attendre que l'authentification soit vérifiée avant de charger les données
+    if (authLoading) return
+    
+    // Si non authentifié, ne pas charger les données (ProtectedRoute gère la redirection)
+    if (!isAuthenticated || !authUser) return
+    
+    // Charger les données seulement si l'utilisateur est authentifié
+    if (authUser && authUser.role === 'proprietaire') {
+      loadDashboardData()
+    }
+  }, [authLoading, isAuthenticated, authUser])
 
   // Fonction de refresh sans afficher le loading (pour les synchronisations automatiques)
   const refreshDashboardData = async () => {
@@ -355,12 +377,97 @@ export default function ProprietaireDashboard() {
     }
   }
 
-  useEffect(() => {
-    loadDashboardData()
-  }, [])
-
-  // Utiliser le hook de synchronisation centralisé (sans afficher le loading)
+  // Utiliser le hook de synchronisation centralisé pour les paiements
   usePaymentSync(refreshDashboardData, [authUser?._id])
+
+  // Utiliser le hook de synchronisation globale pour les demandes et profils
+  useGlobalSync(async () => {
+    await refreshDashboardData()
+  }, [authUser?._id])
+
+  // Écouter les événements Socket.io pour la synchronisation en temps réel
+  useEffect(() => {
+    if (!socket || !isConnected || !authUser?._id) {
+      return
+    }
+
+    console.log('[PROPRIETAIRE DASHBOARD] 🔌 Socket connecté, écoute des événements...')
+
+    // Écouter les événements de synchronisation de demande
+    const handleRequestSync = (data: any) => {
+      console.log('[PROPRIETAIRE DASHBOARD] 📡 Événement requestSync reçu:', data.requestId)
+      // Attendre un court délai pour que le backend soit synchronisé
+      setTimeout(() => {
+        refreshDashboardData()
+      }, 500)
+    }
+
+    // Écouter les événements globaux de synchronisation
+    const handleGlobalRequestSync = (event: any) => {
+      const data = event.detail || event
+      console.log('[PROPRIETAIRE DASHBOARD] 📡 Événement globalRequestSync reçu pour demande:', data.requestId)
+      setTimeout(() => {
+        refreshDashboardData()
+      }, 500)
+    }
+
+    // Écouter les événements de paiement
+    const handlePaymentCreated = (event: any) => {
+      const data = event.detail || event
+      console.log('[PROPRIETAIRE DASHBOARD] 📡 Événement paymentCreated reçu:', data.paymentId, data.requestId)
+      setTimeout(() => {
+        refreshDashboardData()
+      }, 500)
+    }
+
+    // Écouter les événements de synchronisation du profil utilisateur
+    const handleUserProfileSync = (event: any) => {
+      const data = event.detail || event
+      // Synchroniser si le profil concerne une demande liée à ce propriétaire
+      console.log('[PROPRIETAIRE DASHBOARD] 📡 Événement userProfileSync reçu pour utilisateur:', data.userId)
+      setTimeout(() => {
+        refreshDashboardData()
+      }, 500)
+    }
+
+    // S'abonner aux événements Socket.io
+    socket.on('requestSync', handleRequestSync)
+    
+    // S'abonner aux événements DOM
+    if (typeof window !== 'undefined') {
+      window.addEventListener('globalRequestSync', handleGlobalRequestSync)
+      window.addEventListener('paymentCreated', handlePaymentCreated)
+      window.addEventListener('paymentStatusUpdated', handlePaymentCreated)
+      window.addEventListener('userProfileSync', handleUserProfileSync)
+      window.addEventListener('requestSync', handleGlobalRequestSync)
+    }
+
+    // Nettoyage
+    return () => {
+      socket.off('requestSync', handleRequestSync)
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('globalRequestSync', handleGlobalRequestSync)
+        window.removeEventListener('paymentCreated', handlePaymentCreated)
+        window.removeEventListener('paymentStatusUpdated', handlePaymentCreated)
+        window.removeEventListener('userProfileSync', handleUserProfileSync)
+        window.removeEventListener('requestSync', handleGlobalRequestSync)
+      }
+    }
+  }, [socket, isConnected, authUser?._id])
+
+  // Recharger automatiquement le dashboard toutes les 15 secondes pour garantir la synchronisation
+  useEffect(() => {
+    if (!authUser?._id) {
+      return
+    }
+
+    const interval = setInterval(() => {
+      console.log('[PROPRIETAIRE DASHBOARD] 🔄 Rechargement automatique du dashboard')
+      refreshDashboardData()
+    }, 15000) // Recharger toutes les 15 secondes
+
+    return () => clearInterval(interval)
+  }, [authUser?._id])
 
   const getStatusColor = (status: string) => {
     const colors: { [key: string]: string } = {
@@ -399,6 +506,28 @@ export default function ProprietaireDashboard() {
   const formatDate = (dateString?: string) => {
     if (!dateString) return ''
     return new Date(dateString).toLocaleDateString('fr-CA', { day: 'numeric', month: 'long', year: 'numeric' })
+  }
+
+  // Afficher un loader pendant la vérification de l'authentification
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
+          <p className="text-gray-600">Vérification de l'authentification...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Ne rien afficher si non authentifié (ProtectedRoute gère la redirection)
+  if (!isAuthenticated || !authUser) {
+    return null
+  }
+
+  // Vérifier que l'utilisateur a le bon rôle
+  if (authUser.role !== 'proprietaire' && authUser.role !== 'admin') {
+    return null
   }
 
   if (loading) {
@@ -669,17 +798,17 @@ export default function ProprietaireDashboard() {
                             }
                             
                             return (
-                              <Image
+                          <Image
                                 src={imageSrc}
-                                alt={`Unité ${unit.unitNumber} - ${unit.building.name}`}
-                                fill
-                                className="object-cover"
-                                sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
-                                onError={(e) => {
-                                  const target = e.target as HTMLImageElement
-                                  target.src = '/images/default/placeholder.jpg'
-                                }}
-                              />
+                            alt={`Unité ${unit.unitNumber} - ${unit.building.name}`}
+                            fill
+                            className="object-cover"
+                            sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+                            onError={(e) => {
+                              const target = e.target as HTMLImageElement
+                              target.src = '/images/default/placeholder.jpg'
+                            }}
+                          />
                             )
                           })()}
                           {/* Badges sur l'image */}
@@ -803,17 +932,17 @@ export default function ProprietaireDashboard() {
                                     }
                                     
                                     return (
-                                      <Image
+                                  <Image
                                         src={imageSrc}
-                                        alt={`Unité ${unit.unitNumber}`}
-                                        fill
-                                        className="object-cover"
-                                        sizes="64px"
-                                        onError={(e) => {
-                                          const target = e.target as HTMLImageElement
-                                          target.src = '/images/default/placeholder.jpg'
-                                        }}
-                                      />
+                                    alt={`Unité ${unit.unitNumber}`}
+                                    fill
+                                    className="object-cover"
+                                    sizes="64px"
+                                    onError={(e) => {
+                                      const target = e.target as HTMLImageElement
+                                      target.src = '/images/default/placeholder.jpg'
+                                    }}
+                                  />
                                     )
                                   })()}
                                 </div>
@@ -896,61 +1025,131 @@ export default function ProprietaireDashboard() {
                   </Link>
                 </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                  <div className="bg-yellow-50 rounded-lg p-4 border-2 border-yellow-200 text-center">
-                    <div className="text-3xl mb-2">⏳</div>
-                    <p className="font-semibold text-gray-900">
-                      En attente ({dashboardData.stats?.pendingRequests || 0})
-                    </p>
-                  </div>
-                  <div className="bg-blue-50 rounded-lg p-4 border-2 border-blue-200 text-center">
-                    <div className="text-3xl mb-2">🔄</div>
-                    <p className="font-semibold text-gray-900">
-                      En cours ({dashboardData.maintenanceRequests?.filter(r => r.status === 'en_cours').length || 0})
-                    </p>
-                  </div>
-                  <div className="bg-green-50 rounded-lg p-4 border-2 border-green-200 text-center">
-                    <div className="text-3xl mb-2">✅</div>
-                    <p className="font-semibold text-gray-900">
-                      Terminées ({dashboardData.maintenanceRequests?.filter(r => r.status === 'termine').length || 0})
-                    </p>
-                  </div>
-                </div>
-
-                {dashboardData.maintenanceRequests && dashboardData.maintenanceRequests.length > 0 ? (
-                  <div className="space-y-3">
-                    {dashboardData.maintenanceRequests.slice(0, 5).map((request) => (
-                      <div key={request.id} className="bg-gray-50 rounded-lg p-4 border-l-4 border-primary-500 hover:bg-gray-100 transition-colors">
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
-                            <h3 className="font-semibold text-lg mb-1">{request.title}</h3>
-                            <div className="flex items-center gap-3 text-sm text-gray-600">
-                              <span>Type: {request.type}</span>
-                              {request.unit && <span>Unité: {request.unit.unitNumber}</span>}
-                              <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                                request.status === 'en_attente' ? 'bg-yellow-100 text-yellow-800' :
-                                request.status === 'en_cours' ? 'bg-blue-100 text-blue-800' :
-                                'bg-green-100 text-green-800'
-                              }`}>
-                                {request.status === 'en_attente' ? 'En attente' :
-                                 request.status === 'en_cours' ? 'En cours' :
-                                 'Terminée'}
-                              </span>
-                            </div>
-                          </div>
-                          <Link 
-                            href={`/requests/${request.id}`} 
-                            className="ml-4 px-4 py-2 bg-primary-50 text-primary-700 rounded-lg hover:bg-primary-100 transition-colors font-medium text-sm"
-                          >
-                            Voir détails
-                          </Link>
+                {/* Calculer les statistiques des demandes (applications + maintenance) */}
+                {(() => {
+                  const allRequests = [
+                    ...(dashboardData.applications || []),
+                    ...(dashboardData.maintenanceRequests || [])
+                  ];
+                  const pendingCount = allRequests.filter(r => r.status === 'en_attente').length;
+                  const inProgressCount = allRequests.filter(r => r.status === 'en_cours' || r.status === 'accepte').length;
+                  const completedCount = allRequests.filter(r => r.status === 'termine' || r.status === 'refuse').length;
+                  
+                  return (
+                    <>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                        <div className="bg-yellow-50 rounded-lg p-4 border-2 border-yellow-200 text-center">
+                          <div className="text-3xl mb-2">⏳</div>
+                          <p className="font-semibold text-gray-900">
+                            En attente ({pendingCount})
+                          </p>
+                        </div>
+                        <div className="bg-blue-50 rounded-lg p-4 border-2 border-blue-200 text-center">
+                          <div className="text-3xl mb-2">🔄</div>
+                          <p className="font-semibold text-gray-900">
+                            En cours ({inProgressCount})
+                          </p>
+                        </div>
+                        <div className="bg-green-50 rounded-lg p-4 border-2 border-green-200 text-center">
+                          <div className="text-3xl mb-2">✅</div>
+                          <p className="font-semibold text-gray-900">
+                            Terminées ({completedCount})
+                          </p>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-center py-8 text-gray-500">Aucune demande en cours</p>
-                )}
+
+                      {allRequests.length > 0 ? (
+                        <div className="space-y-3">
+                          {/* Afficher les applications (demandes de location/achat) */}
+                          {dashboardData.applications && dashboardData.applications.length > 0 && dashboardData.applications
+                            .slice(0, 5)
+                            .map((application) => (
+                              <div key={application._id} className="bg-gray-50 rounded-lg p-4 border-l-4 border-blue-500 hover:bg-gray-100 transition-colors">
+                                <div className="flex items-start justify-between">
+                                  <div className="flex-1">
+                                    <h3 className="font-semibold text-lg mb-1">
+                                      {application.type === 'location' ? '📍 Location' : '🏠 Achat'} - {application.unit?.unitNumber || 'N/A'}
+                                    </h3>
+                                    <div className="flex items-center gap-3 text-sm text-gray-600">
+                                      {application.building && <span>Immeuble: {application.building.name}</span>}
+                                      {application.createdBy && (
+                                        <span>Demandeur: {application.createdBy.firstName} {application.createdBy.lastName}</span>
+                                      )}
+                                      <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                                        application.status === 'en_attente' ? 'bg-yellow-100 text-yellow-800' :
+                                        application.status === 'accepte' ? 'bg-blue-100 text-blue-800' :
+                                        application.status === 'refuse' ? 'bg-red-100 text-red-800' :
+                                        'bg-green-100 text-green-800'
+                                      }`}>
+                                        {application.status === 'en_attente' ? 'En attente' :
+                                         application.status === 'accepte' ? 'Acceptée' :
+                                         application.status === 'refuse' ? 'Refusée' :
+                                         'Terminée'}
+                                      </span>
+                                    </div>
+                                    {application.description && (
+                                      <p className="text-sm text-gray-600 mt-1 line-clamp-2">{application.description}</p>
+                                    )}
+                                  </div>
+                                  <Link 
+                                    href={(() => {
+                                      // Si le propriétaire actuel est le créateur de la demande (créée quand il était visiteur)
+                                      // → Rediriger vers /locataire/requests/[id] pour qu'il puisse signer ses documents
+                                      const requestCreatorId = application.createdBy?._id?.toString() || application.createdBy?.toString() || null;
+                                      const currentUserId = authUser?._id?.toString() || authUser?.id?.toString() || null;
+                                      
+                                      if (requestCreatorId === currentUserId) {
+                                        return `/locataire/requests/${application._id}`;
+                                      }
+                                      // Sinon → Rediriger vers /proprietaire/requests/[id] pour voir les détails de la demande pour son unité
+                                      return `/proprietaire/requests/${application._id}`;
+                                    })()}
+                                    className="ml-4 px-4 py-2 bg-primary-50 text-primary-700 rounded-lg hover:bg-primary-100 transition-colors font-medium text-sm whitespace-nowrap"
+                                  >
+                                    Voir détails
+                                  </Link>
+                                </div>
+                              </div>
+                            ))}
+                          
+                          {/* Afficher les demandes de maintenance */}
+                          {dashboardData.maintenanceRequests && dashboardData.maintenanceRequests.length > 0 && dashboardData.maintenanceRequests
+                            .slice(0, 5 - (dashboardData.applications?.length || 0))
+                            .map((request) => (
+                              <div key={request.id} className="bg-gray-50 rounded-lg p-4 border-l-4 border-primary-500 hover:bg-gray-100 transition-colors">
+                                <div className="flex items-start justify-between">
+                                  <div className="flex-1">
+                                    <h3 className="font-semibold text-lg mb-1">{request.title}</h3>
+                                    <div className="flex items-center gap-3 text-sm text-gray-600">
+                                      <span>Type: {request.type}</span>
+                                      {request.unit && <span>Unité: {request.unit.unitNumber}</span>}
+                                      <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                                        request.status === 'en_attente' ? 'bg-yellow-100 text-yellow-800' :
+                                        request.status === 'en_cours' ? 'bg-blue-100 text-blue-800' :
+                                        'bg-green-100 text-green-800'
+                                      }`}>
+                                        {request.status === 'en_attente' ? 'En attente' :
+                                         request.status === 'en_cours' ? 'En cours' :
+                                         'Terminée'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <Link 
+                                    href={`/requests/${request.id}`} 
+                                    className="ml-4 px-4 py-2 bg-primary-50 text-primary-700 rounded-lg hover:bg-primary-100 transition-colors font-medium text-sm"
+                                  >
+                                    Voir détails
+                                  </Link>
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      ) : (
+                        <p className="text-center py-8 text-gray-500">Aucune demande en cours</p>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
 
               {/* Section 3 - Documents à signer */}
@@ -968,46 +1167,125 @@ export default function ProprietaireDashboard() {
                   
                   <div className="space-y-4">
                     {dashboardData.acceptedRequestsWithDocs.map((request) => {
-                      const unsignedDocs = request.generatedDocuments.filter(doc => !doc.signed || doc.signed === false);
-                      if (unsignedDocs.length === 0) return null;
+                      const hasDocuments = request.generatedDocuments && request.generatedDocuments.length > 0;
+                      const unsignedDocs = hasDocuments ? request.generatedDocuments.filter((doc: any) => !doc.signed || doc.signed === false) : [];
+                      const signedDocs = hasDocuments ? request.generatedDocuments.filter((doc: any) => doc.signed === true) : [];
+                      const hasUnsignedDocs = unsignedDocs.length > 0;
+                      const allDocumentsSigned = hasDocuments && signedDocs.length === request.generatedDocuments.length;
                       
+                      // Afficher toutes les demandes acceptées avec documents, même si tous sont signés
+                      // Cela permet au propriétaire de voir ses demandes et leurs statuts
                       return (
-                        <div key={request._id} className="bg-white rounded-lg p-5 border-2 border-orange-300 shadow-md hover:shadow-lg transition-shadow">
+                        <div key={request._id} className={`bg-white rounded-lg p-5 border-2 shadow-md hover:shadow-lg transition-shadow ${
+                          !hasDocuments ? 'border-blue-300 bg-blue-50' :
+                          hasUnsignedDocs ? 'border-orange-300 bg-orange-50' : 
+                          'border-green-300 bg-green-50'
+                        }`}>
                           <div className="flex items-start justify-between mb-4">
                             <div className="flex-1">
-                              <h3 className="font-bold text-lg text-gray-900 mb-2">
-                                {request.type === 'location' ? '📍 Location' : '🏠 Achat'} - Unité {request.unit?.unitNumber}
-                              </h3>
+                              <div className="flex items-center gap-2 mb-2">
+                                <h3 className="font-bold text-lg text-gray-900">
+                                  {request.type === 'location' ? '📍 Location' : '🏠 Achat'} - Unité {request.unit?.unitNumber}
+                                </h3>
+                                {!hasDocuments && (
+                                  <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs font-semibold rounded-full">
+                                    📄 Documents à générer
+                                  </span>
+                                )}
+                                {hasDocuments && allDocumentsSigned && (
+                                  <span className="px-2 py-1 bg-green-100 text-green-800 text-xs font-semibold rounded-full">
+                                    ✅ Tous signés
+                                  </span>
+                                )}
+                                {hasDocuments && hasUnsignedDocs && (
+                                  <span className="px-2 py-1 bg-orange-100 text-orange-800 text-xs font-semibold rounded-full">
+                                    ⏳ {unsignedDocs.length} doc{unsignedDocs.length > 1 ? 's' : ''} à signer
+                                  </span>
+                                )}
+                              </div>
                               <div className="text-sm text-gray-600 space-y-1">
                                 <p><strong>Demandeur:</strong> {request.createdBy?.firstName} {request.createdBy?.lastName}</p>
                                 <p><strong>Email:</strong> {request.createdBy?.email}</p>
                                 {request.building?.name && <p><strong>Immeuble:</strong> {request.building.name}</p>}
                                 <p><strong>Acceptée le:</strong> {formatDate(request.approvedAt)}</p>
+                                <p><strong>Documents:</strong> {
+                                  hasDocuments 
+                                    ? `${signedDocs.length} signé${signedDocs.length > 1 ? 's' : ''} / ${request.generatedDocuments.length} total`
+                                    : 'Aucun document généré'
+                                }</p>
                               </div>
                             </div>
                             <Link
-                              href={`/proprietaire/requests/${request._id}`}
-                              className="ml-4 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors font-medium text-sm"
+                              href={
+                                // Si le propriétaire a créé la demande lui-même, utiliser /locataire/requests pour signer
+                                // Sinon, utiliser /proprietaire/requests pour voir les détails de la candidature
+                                (() => {
+                                  const requestCreatorId = request.createdBy?._id?.toString() || request.createdBy?.toString() || null;
+                                  const currentUserId = authUser?._id?.toString() || authUser?.id?.toString() || null;
+                                  return requestCreatorId === currentUserId;
+                                })()
+                                  ? `/locataire/requests/${request._id}`
+                                  : `/proprietaire/requests/${request._id}`
+                              }
+                              className={`ml-4 px-4 py-2 rounded-lg transition-colors font-medium text-sm ${
+                                !hasDocuments
+                                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                                  : hasUnsignedDocs 
+                                    ? 'bg-orange-600 text-white hover:bg-orange-700' 
+                                    : 'bg-green-600 text-white hover:bg-green-700'
+                              }`}
                             >
-                              Voir et signer →
+                              {(() => {
+                                const requestCreatorId = request.createdBy?._id?.toString() || request.createdBy?.toString() || null;
+                                const currentUserId = authUser?._id?.toString() || authUser?.id?.toString() || null;
+                                if (requestCreatorId === currentUserId) {
+                                  if (!hasDocuments) return 'Voir détails →';
+                                  return hasUnsignedDocs ? 'Voir et signer →' : 'Voir documents →';
+                                }
+                                return 'Voir détails →';
+                              })()}
                             </Link>
                           </div>
                           
-                          <div className="mt-4 pt-4 border-t border-orange-200">
-                            <p className="text-sm font-semibold text-gray-700 mb-2">Documents en attente de signature:</p>
+                          {hasDocuments && (
+                          <div className="mt-4 pt-4 border-t border-gray-200">
+                            <p className="text-sm font-semibold text-gray-700 mb-2">
+                              {hasUnsignedDocs ? '📝 Documents en attente de signature:' : '✅ Documents générés:'}
+                            </p>
                             <div className="space-y-2">
-                              {unsignedDocs.map((doc, idx) => (
-                                <div key={idx} className="flex items-center justify-between bg-orange-50 p-3 rounded">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-xl">📄</span>
-                                    <span className="font-medium text-gray-800">{doc.filename}</span>
-                                    <span className="text-xs text-gray-600">({doc.type === 'bail' ? 'Bail' : doc.type === 'contrat_vente' ? 'Contrat de vente' : 'Document'})</span>
+                              {/* Afficher tous les documents avec leur statut */}
+                              {request.generatedDocuments?.map((doc: any, idx: number) => {
+                                const isSigned = doc.signed === true;
+                                return (
+                                  <div key={idx} className={`flex items-center justify-between p-3 rounded ${
+                                    isSigned ? 'bg-green-50' : 'bg-orange-50'
+                                  }`}>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xl">{isSigned ? '✅' : '📄'}</span>
+                                      <span className="font-medium text-gray-800">{doc.filename}</span>
+                                      <span className="text-xs text-gray-600">({doc.type === 'bail' ? 'Bail' : doc.type === 'contrat_vente' ? 'Contrat de vente' : 'Document'})</span>
+                                    </div>
+                                    <span className={`px-2 py-1 text-xs font-semibold rounded ${
+                                      isSigned 
+                                        ? 'bg-green-200 text-green-800' 
+                                        : 'bg-orange-200 text-orange-800'
+                                    }`}>
+                                      {isSigned ? '✅ Signé' : '⏳ En attente'}
+                                    </span>
                                   </div>
-                                  <span className="px-2 py-1 bg-orange-200 text-orange-800 text-xs font-semibold rounded">⏳ En attente</span>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           </div>
+                          )}
+                          
+                          {!hasDocuments && (
+                            <div className="mt-4 pt-4 border-t border-gray-200">
+                              <p className="text-sm text-blue-700 font-semibold">
+                                📄 Aucun document généré. L'administrateur doit générer les documents.
+                              </p>
+                            </div>
+                          )}
                           
                           {request.initialPayment && request.initialPayment.status === 'en_attente' && (
                             <div className="mt-4 pt-4 border-t border-orange-200">

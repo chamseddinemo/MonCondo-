@@ -74,14 +74,14 @@ buildingSchema.pre('save', function(next) {
   next();
 });
 
-// Virtual pour obtenir l'URL de l'image (image stockée ou générée automatiquement)
+// Virtual pour obtenir l'URL de l'image (uniquement image stockée par l'admin)
 buildingSchema.virtual('imageUrl').get(function() {
+  // Retourner uniquement l'image uploadée par l'admin
   if (this.image) {
     return this.image;
   }
-  
-  const { getBuildingImageUrl } = require('../utils/imageHelper');
-  return getBuildingImageUrl(this);
+  // Pas d'image - retourner null (le frontend utilisera un placeholder)
+  return null;
 });
 
 // S'assurer que les virtuals sont inclus dans JSON

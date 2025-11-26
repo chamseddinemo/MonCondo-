@@ -4,8 +4,11 @@
  */
 
 // Configuration de l'URL de base de l'API
+// Utilise le port 3000 avec proxy Next.js qui redirige vers le backend sur 5000
 const getApiBaseUrl = (): string => {
-  const envUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'
+  // En développement, utiliser le port 3000 (Next.js proxy vers backend)
+  // En production, utiliser la variable d'environnement ou localhost:3000
+  const envUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api'
   // Nettoyer l'URL : enlever les espaces et les slashes finaux
   let baseUrl = String(envUrl).trim().replace(/\s+/g, '')
   
@@ -19,8 +22,8 @@ const getApiBaseUrl = (): string => {
   
   // Vérifier que l'URL commence par http:// ou https://
   if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
-    console.warn('[API] URL ne commence pas par http:// ou https://, utilisation de http://localhost:5000/api par défaut')
-    baseUrl = 'http://localhost:5000/api'
+    console.warn('[API] URL ne commence pas par http:// ou https://, utilisation de http://localhost:3000/api par défaut')
+    baseUrl = 'http://localhost:3000/api'
   }
   
   return baseUrl

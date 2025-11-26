@@ -82,10 +82,8 @@ exports.getRequests = async (req, res) => {
 // @access  Private
 exports.getRequest = async (req, res) => {
   try {
-    // Si admin, inclure toutes les informations du profil
-    const populateFields = req.user.role === 'admin' ? 
-      'firstName lastName email phone monthlyIncome numberOfChildren creditScore reputation previousTenant employmentProof identityDocument' :
-      'firstName lastName email phone';
+    // Toujours inclure toutes les informations du profil du demandeur pour synchronisation
+    const populateFields = 'firstName lastName email phone role monthlyIncome numberOfChildren creditScore reputation previousTenant';
 
     const request = await Request.findById(req.params.id)
       .populate('building', 'name address')
@@ -96,7 +94,8 @@ exports.getRequest = async (req, res) => {
       .populate('rejectedBy', 'firstName lastName')
       .populate('statusHistory.changedBy', 'firstName lastName')
       .populate('adminNotes.addedBy', 'firstName lastName')
-      .populate('generatedDocuments.signedBy', 'firstName lastName');
+      .populate('generatedDocuments.signedBy', 'firstName lastName')
+      .lean(); // Utiliser lean() pour obtenir un objet plain JavaScript
 
     if (!request) {
       return res.status(404).json({
@@ -115,7 +114,7 @@ exports.getRequest = async (req, res) => {
       }).select('_id');
 
       const userId = req.user._id.toString();
-      const creatorId = request.createdBy ? request.createdBy._id.toString() : null;
+      const creatorId = request.createdBy ? (request.createdBy._id ? request.createdBy._id.toString() : request.createdBy.toString()) : null;
       
       // Vérifier si l'utilisateur est le créateur
       const isCreator = creatorId === userId;
@@ -135,9 +134,41 @@ exports.getRequest = async (req, res) => {
       }
     }
 
+    // Récupérer les paiements liés à cette demande
+    const Payment = require('../models/Payment');
+    const payments = await Payment.find({ requestId: request._id })
+      .populate('payer', 'firstName lastName email')
+      .populate('recipient', 'firstName lastName email')
+      .populate('unit', 'unitNumber')
+      .populate('building', 'name')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Ajouter les paiements à la réponse
+    const requestWithPayments = {
+      ...request,
+      payments: payments || []
+    };
+    
+    // Log pour déboguer - vérifier que les documents sont présents
+    console.log('[GET REQUEST] 📋 Demande récupérée:', {
+      requestId: request._id,
+      status: request.status,
+      hasGeneratedDocuments: !!(request.generatedDocuments && request.generatedDocuments.length > 0),
+      documentsCount: request.generatedDocuments?.length || 0,
+      documents: request.generatedDocuments?.map(doc => ({
+        _id: doc._id,
+        type: doc.type,
+        filename: doc.filename,
+        signed: doc.signed || false
+      })) || [],
+      userRole: req.user.role,
+      userId: req.user._id
+    });
+
     res.status(200).json({
       success: true,
-      data: request
+      data: requestWithPayments
     });
   } catch (error) {
     console.error('[GET REQUEST] Erreur:', error);
@@ -155,6 +186,16 @@ exports.createRequest = async (req, res) => {
   try {
     // Ajouter le créateur automatiquement
     req.body.createdBy = req.user._id;
+    
+    console.log('[CREATE REQUEST] 📝 Création de demande:', {
+      userId: req.user._id,
+      userEmail: req.user.email,
+      userRole: req.user.role,
+      type: req.body.type,
+      unit: req.body.unit,
+      building: req.body.building,
+      createdBy: req.body.createdBy
+    });
 
     // Si une unité est fournie mais pas de building, récupérer le building depuis l'unité
     let unit = null;
@@ -205,10 +246,21 @@ exports.createRequest = async (req, res) => {
       createdBy: req.user._id
     });
 
+    console.log('[CREATE REQUEST] ✅ Demande créée avec succès:', {
+      requestId: request._id,
+      type: request.type,
+      status: request.status,
+      createdBy: request.createdBy,
+      unit: request.unit,
+      building: request.building,
+      hasInitialPayment: !!request.initialPayment,
+      initialPaymentStatus: request.initialPayment?.status || 'non créé'
+    });
+
     const populatedRequest = await Request.findById(request._id)
       .populate('building', 'name address')
       .populate('unit', 'unitNumber')
-      .populate('createdBy', 'firstName lastName email');
+      .populate('createdBy', 'firstName lastName email phone role');
 
     // Synchroniser toutes les vues après la création via le service global
     try {
@@ -703,21 +755,49 @@ exports.acceptRequest = async (req, res) => {
     if ((request.type === 'location' || request.type === 'achat') && request.unit) {
       const unit = await Unit.findById(request.unit._id || request.unit);
       if (unit) {
-        const amount = request.type === 'location' 
-          ? (unit.rentPrice || 0) 
-          : (unit.salePrice ? unit.salePrice * 0.1 : 0);
+        let amount = 0;
+        
+        if (request.type === 'location') {
+          // Pour location: montant = premier loyer mensuel
+          amount = unit.rentPrice || 0;
+        } else if (request.type === 'achat') {
+          // Pour achat: montant = 10% du prix de vente (acompte)
+          // Si salePrice est 0 ou non défini, utiliser un montant minimum ou le rentPrice * 12
+          if (unit.salePrice && unit.salePrice > 0) {
+            amount = unit.salePrice * 0.1; // 10% du prix de vente
+          } else if (unit.rentPrice && unit.rentPrice > 0) {
+            // Fallback: utiliser 12 mois de loyer si pas de prix de vente
+            amount = unit.rentPrice * 12;
+            console.log('[ACCEPT REQUEST] ⚠️  Prix de vente non défini, utilisation de 12 mois de loyer comme acompte:', amount);
+          } else {
+            // Montant minimum par défaut pour un achat
+            amount = 10000; // $10,000 par défaut
+            console.log('[ACCEPT REQUEST] ⚠️  Aucun prix défini, utilisation du montant minimum pour achat:', amount);
+          }
+        }
         
         if (amount > 0) {
           request.initialPayment = {
             amount: amount,
             status: 'en_attente'
           };
+          console.log('[ACCEPT REQUEST] 💰 Paiement initial créé:', {
+            amount: amount,
+            status: 'en_attente',
+            type: request.type,
+            unitNumber: unit.unitNumber,
+            salePrice: unit.salePrice,
+            rentPrice: unit.rentPrice
+          });
+        } else {
+          console.log('[ACCEPT REQUEST] ⚠️  Montant paiement initial = 0, aucun paiement créé');
         }
       }
     }
 
-    // Générer les documents (bail ou contrat de vente)
+    // Générer les documents (bail ou contrat de vente) - INSTANTANÉ
     if ((request.type === 'location' || request.type === 'achat') && request.unit) {
+      console.log('[ACCEPT REQUEST] 📄 Génération des documents - Début');
       try {
         const unit = await Unit.findById(request.unit._id || request.unit)
           .populate('building', 'name address')
@@ -728,18 +808,46 @@ exports.acceptRequest = async (req, res) => {
         const requester = await User.findById(request.createdBy._id || request.createdBy);
         const owner = unit.proprietaire || await User.findOne({ role: 'admin' });
 
-        if (!building || !requester || !owner) {
-          throw new Error('Données manquantes pour la génération du document');
+        if (!building) {
+          console.error('[ACCEPT REQUEST] ❌ Building manquant');
+          throw new Error('Building manquant pour la génération du document');
         }
+        if (!requester) {
+          console.error('[ACCEPT REQUEST] ❌ Requester manquant');
+          throw new Error('Requester manquant pour la génération du document');
+        }
+        if (!owner) {
+          console.error('[ACCEPT REQUEST] ⚠️  Owner manquant, utilisation de l\'admin par défaut');
+          const adminUser = await User.findOne({ role: 'admin' });
+          if (!adminUser) {
+            throw new Error('Aucun propriétaire ou admin trouvé pour la génération du document');
+          }
+        }
+
+        console.log('[ACCEPT REQUEST] 📄 Génération du document:', {
+          type: request.type,
+          unit: unit.unitNumber,
+          building: building.name,
+          requester: `${requester.firstName} ${requester.lastName}`,
+          owner: owner ? `${owner.firstName} ${owner.lastName}` : 'Admin par défaut'
+        });
 
         let documentResult;
         if (request.type === 'location') {
+          console.log('[ACCEPT REQUEST] 📝 Génération du bail...');
           documentResult = await generateLeaseAgreement(request, unit, building, requester, owner);
         } else if (request.type === 'achat') {
+          console.log('[ACCEPT REQUEST] 📝 Génération du contrat de vente...');
           documentResult = await generateSaleAgreement(request, unit, building, requester, owner);
         }
 
         if (documentResult && documentResult.success) {
+          console.log('[ACCEPT REQUEST] ✅ Document généré avec succès:', {
+            filename: documentResult.filename,
+            path: documentResult.path,
+            type: documentResult.type
+          });
+
           if (!request.generatedDocuments) {
             request.generatedDocuments = [];
           }
@@ -759,7 +867,7 @@ exports.acceptRequest = async (req, res) => {
             relativePath = 'documents/' + relativePath;
           }
           
-          console.log('[ACCEPT REQUEST] Chemin document:', {
+          console.log('[ACCEPT REQUEST] 📁 Chemin document final:', {
             original: documentResult.path,
             relative: relativePath,
             filename: documentResult.filename,
@@ -769,22 +877,106 @@ exports.acceptRequest = async (req, res) => {
           const docType = documentResult.type === 'bail' ? 'bail' : 
                          documentResult.type === 'contrat_vente' ? 'contrat_vente' : 'autre';
           
-          request.generatedDocuments.push({
+          const newDocument = {
             type: docType,
             filename: documentResult.filename,
             path: relativePath,
             signed: false,
-            generatedAt: documentResult.generatedAt
+            generatedAt: documentResult.generatedAt || new Date(),
+            signedBy: undefined, // Pas encore signé
+            signedAt: undefined  // Pas encore signé
+          };
+
+          request.generatedDocuments.push(newDocument);
+          console.log('[ACCEPT REQUEST] ✅ Document ajouté à la demande:', {
+            documentId: newDocument._id,
+            type: newDocument.type,
+            filename: newDocument.filename,
+            path: newDocument.path,
+            totalDocuments: request.generatedDocuments.length,
+            signed: false,
+            signedBy: undefined,
+            signedAt: undefined,
+            generatedAt: newDocument.generatedAt,
+            note: 'Le document sera signé par le demandeur après consultation'
           });
+
+          // ❌ SIGNATURE AUTOMATIQUE DÉSACTIVÉE
+          // Le demandeur doit maintenant consulter et signer manuellement les documents
+          // Les documents sont créés avec signed: false et le demandeur les signera via l'interface
+        } else {
+          console.error('[ACCEPT REQUEST] ❌ Échec de la génération du document:', documentResult);
+          throw new Error('La génération du document a échoué');
         }
       } catch (error) {
-        console.error('[ACCEPT] Erreur génération document:', error.message);
-        // Ne pas faire échouer l'acceptation si la génération de document échoue
+        console.error('[ACCEPT REQUEST] ❌ Erreur génération document:', error);
+        console.error('[ACCEPT REQUEST] Stack:', error.stack);
+        // Faire échouer l'acceptation si la génération des documents échoue
+        // Les documents doivent être générés automatiquement lors de l'acceptation
+        return res.status(500).json({
+          success: false,
+          message: `Impossible d'accepter la demande : erreur lors de la génération des documents. ${error.message || 'Veuillez vérifier que toutes les informations nécessaires sont présentes (unité, bâtiment, demandeur, propriétaire).'}`
+        });
+      }
+      console.log('[ACCEPT REQUEST] ✅ Génération des documents - Terminé');
+      
+      // Vérifier que les documents ont bien été générés
+      if (!request.generatedDocuments || request.generatedDocuments.length === 0) {
+        console.error('[ACCEPT REQUEST] ❌ Aucun document généré malgré le succès de la fonction');
+        return res.status(500).json({
+          success: false,
+          message: 'Impossible d\'accepter la demande : aucun document n\'a pu être généré. Veuillez vérifier que toutes les informations nécessaires sont présentes.'
+        });
       }
     }
 
-    // Sauvegarder la demande
+    // Sauvegarder la demande AVANT de récupérer la version peuplée
     await request.save();
+    console.log('[ACCEPT REQUEST] 💾 Demande sauvegardée avec documents:', {
+      requestId: request._id,
+      documentsCount: request.generatedDocuments?.length || 0,
+      documents: request.generatedDocuments?.map(doc => {
+        const docObj = doc.toObject ? doc.toObject() : doc;
+        return {
+          filename: docObj.filename,
+          type: docObj.type,
+          signed: docObj.signed || false,
+          _id: docObj._id
+        };
+      }) || []
+    });
+    
+    // Attendre un court instant pour s'assurer que la sauvegarde est bien persistée
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Promouvoir le visiteur selon le type de demande
+    // IMPORTANT: On ne fait QUE la promotion de rôle ici, PAS l'assignation de l'unité
+    // L'unité sera assignée plus tard via assignUnit() après paiement et signatures complètes
+    try {
+      const requester = await User.findById(request.createdBy._id || request.createdBy);
+      if (requester && requester.role === 'visiteur' && (request.type === 'location' || request.type === 'achat')) {
+        const roleToPromote = request.type === 'achat' ? 'proprietaire' : 'locataire';
+        
+        console.log(`[ACCEPT REQUEST] 🔄 Promotion du visiteur ${requester.email} vers ${roleToPromote}`);
+        
+        // Promouvoir directement le visiteur (mais NE PAS assigner l'unité ici)
+        requester.role = roleToPromote;
+        await requester.save();
+        
+        console.log(`[ACCEPT REQUEST] ✅ Visiteur promu ${roleToPromote} avec succès`);
+        console.log(`[ACCEPT REQUEST] ⏳ L'unité sera assignée plus tard après paiement et signatures complètes des documents`);
+
+        // ❌ ASSIGNATION D'UNITÉ RETIRÉE ICI
+        // L'unité doit être assignée UNIQUEMENT après :
+        // 1. Tous les documents signés
+        // 2. Paiement initial confirmé (paye)
+        // 3. Via la fonction assignUnit() appelée par l'admin
+        // OU automatiquement via markPaymentAsPaid() après paiement réussi
+      }
+    } catch (promotionError) {
+      console.error('[ACCEPT REQUEST] ⚠️  Erreur promotion visiteur (non bloquante):', promotionError);
+      // Ne pas faire échouer l'acceptation si la promotion échoue
+    }
 
     // Synchroniser toutes les vues après l'acceptation via le service global
     try {
@@ -797,19 +989,144 @@ exports.acceptRequest = async (req, res) => {
       console.error('[ACCEPT REQUEST] ⚠️  Erreur synchronisation (non bloquante):', syncError);
     }
 
-    // Récupérer la demande peuplée pour la réponse
-    const populatedRequest = await Request.findById(request._id)
+    // Récupérer la demande peuplée pour la réponse (avec les documents générés et signés)
+    // Utiliser lean() pour obtenir un objet plain JavaScript (plus rapide)
+    let populatedRequest = await Request.findById(request._id)
       .populate('building', 'name address')
       .populate('unit', 'unitNumber type size bedrooms rentPrice salePrice')
       .populate('createdBy', 'firstName lastName email phone monthlyIncome numberOfChildren creditScore reputation')
       .populate('approvedBy', 'firstName lastName')
-      .populate('statusHistory.changedBy', 'firstName lastName');
+      .populate('statusHistory.changedBy', 'firstName lastName')
+      .lean(); // Utiliser lean() pour obtenir un objet plain JavaScript
+    
+    // Vérifier que les documents sont bien présents après récupération
+    console.log('[ACCEPT REQUEST] 📋 Vérification après récupération:', {
+      hasPopulatedRequest: !!populatedRequest,
+      hasDocuments: !!(populatedRequest?.generatedDocuments && populatedRequest.generatedDocuments.length > 0),
+      documentsCount: populatedRequest?.generatedDocuments?.length || 0,
+      requestId: populatedRequest?._id,
+      type: populatedRequest?.type,
+      requestIdFromDb: request._id
+    });
+    
+    // Si les documents ne sont pas présents, les récupérer depuis la demande sauvegardée
+    if (populatedRequest && (!populatedRequest.generatedDocuments || populatedRequest.generatedDocuments.length === 0)) {
+      console.log('[ACCEPT REQUEST] ⚠️ Documents absents dans populatedRequest, récupération depuis DB...');
+      const savedRequest = await Request.findById(request._id).select('generatedDocuments').lean();
+      if (savedRequest && savedRequest.generatedDocuments && savedRequest.generatedDocuments.length > 0) {
+        // Convertir les documents en objets plain si nécessaire
+        populatedRequest.generatedDocuments = savedRequest.generatedDocuments.map(doc => {
+          if (doc.toObject) {
+            return doc.toObject();
+          }
+          return doc;
+        });
+        console.log('[ACCEPT REQUEST] ✅ Documents récupérés depuis DB:', populatedRequest.generatedDocuments.length);
+      } else {
+        // Si toujours pas de documents, vérifier directement dans request (objet Mongoose)
+        if (request.generatedDocuments && request.generatedDocuments.length > 0) {
+          populatedRequest.generatedDocuments = request.generatedDocuments.map(doc => {
+            const docObj = doc.toObject ? doc.toObject() : doc;
+            return {
+              type: docObj.type,
+              filename: docObj.filename,
+              path: docObj.path,
+              signed: docObj.signed || false,
+              signedBy: docObj.signedBy,
+              signedAt: docObj.signedAt,
+              generatedAt: docObj.generatedAt,
+              _id: docObj._id
+            };
+          });
+          console.log('[ACCEPT REQUEST] ✅ Documents récupérés depuis request (objet Mongoose):', populatedRequest.generatedDocuments.length);
+        }
+      }
+    }
+    
+    // Peupler manuellement signedBy pour chaque document (Mongoose peut avoir des difficultés avec le populate imbriqué)
+    if (populatedRequest && populatedRequest.generatedDocuments && populatedRequest.generatedDocuments.length > 0) {
+      for (let i = 0; i < populatedRequest.generatedDocuments.length; i++) {
+        const doc = populatedRequest.generatedDocuments[i];
+        if (doc.signedBy && (typeof doc.signedBy === 'string' || doc.signedBy.toString)) {
+          try {
+            const signerId = doc.signedBy.toString ? doc.signedBy.toString() : doc.signedBy;
+            const signer = await User.findById(signerId).select('firstName lastName email').lean();
+            if (signer) {
+              populatedRequest.generatedDocuments[i].signedBy = signer;
+            }
+          } catch (populateError) {
+            console.error('[ACCEPT REQUEST] Erreur populate signedBy:', populateError);
+          }
+        } else if (doc.signedBy && typeof doc.signedBy === 'object' && doc.signedBy._id) {
+          // signedBy est déjà peuplé, s'assurer qu'il est en format plain
+          populatedRequest.generatedDocuments[i].signedBy = doc.signedBy.toObject ? doc.signedBy.toObject() : doc.signedBy;
+        }
+      }
+    }
 
-    // Envoyer une notification au demandeur
+    // Utiliser populatedRequest comme finalRequest
+    const finalRequest = populatedRequest;
+    
+    // S'assurer que generatedDocuments est bien présent dans la réponse
+    if (finalRequest && finalRequest.generatedDocuments && finalRequest.generatedDocuments.length > 0) {
+      console.log('[ACCEPT REQUEST] ✅ Documents dans la réponse finale:', finalRequest.generatedDocuments.length);
+      finalRequest.generatedDocuments.forEach((doc, index) => {
+        console.log(`[ACCEPT REQUEST]   Document ${index + 1}:`, {
+          type: doc.type,
+          filename: doc.filename,
+          path: doc.path,
+          signed: doc.signed || false,
+          signedBy: doc.signedBy ? {
+            id: doc.signedBy._id || doc.signedBy,
+            name: doc.signedBy.firstName && doc.signedBy.lastName ? `${doc.signedBy.firstName} ${doc.signedBy.lastName}` : 'N/A',
+            email: doc.signedBy.email || 'N/A'
+          } : null,
+          signedAt: doc.signedAt
+        });
+      });
+    } else {
+      console.warn('[ACCEPT REQUEST] ⚠️  Aucun document généré dans la réponse finale');
+      console.warn('[ACCEPT REQUEST]   Type de demande:', request.type);
+      console.warn('[ACCEPT REQUEST]   Unité présente:', !!request.unit);
+      console.warn('[ACCEPT REQUEST]   Documents dans request (avant récupération):', request.generatedDocuments?.length || 0);
+      console.warn('[ACCEPT REQUEST]   Documents dans finalRequest:', finalRequest?.generatedDocuments?.length || 0);
+      
+      // Dernière tentative : récupérer directement depuis la base
+      try {
+        const dbRequest = await Request.findById(request._id).select('generatedDocuments');
+        if (dbRequest && dbRequest.generatedDocuments && dbRequest.generatedDocuments.length > 0) {
+          console.log('[ACCEPT REQUEST] ✅ Documents trouvés directement dans la DB:', dbRequest.generatedDocuments.length);
+          if (!finalRequest.generatedDocuments) {
+            finalRequest.generatedDocuments = [];
+          }
+          finalRequest.generatedDocuments = dbRequest.generatedDocuments.map(doc => doc.toObject ? doc.toObject() : doc);
+        }
+      } catch (dbError) {
+        console.error('[ACCEPT REQUEST] ❌ Erreur récupération directe DB:', dbError);
+      }
+    }
+
+    // Envoyer une notification au demandeur pour signer les documents
     try {
       const requester = await User.findById(request.createdBy._id || request.createdBy);
-      if (requester) {
-        await notifyRequestAccepted(populatedRequest, requester);
+      if (requester && finalRequest.generatedDocuments && finalRequest.generatedDocuments.length > 0) {
+        await notifyRequestAccepted(finalRequest, requester);
+        
+        // Notification supplémentaire pour informer qu'il doit signer les documents
+        const Notification = require('../models/Notification');
+        const docTypeLabel = finalRequest.type === 'achat' ? 'contrat de vente' : finalRequest.type === 'location' ? 'bail' : 'document';
+        await Notification.create({
+          user: requester._id,
+          type: 'contract',
+          title: '📝 Documents à signer - Action requise',
+          content: `Votre demande de ${docTypeLabel} pour l'unité ${finalRequest.unit?.unitNumber || 'N/A'} a été acceptée. ${finalRequest.generatedDocuments.length} document(s) ${finalRequest.generatedDocuments.length > 1 ? 'ont été générés automatiquement et sont' : 'a été généré automatiquement et est'} en attente de votre signature. Veuillez consulter votre tableau de bord pour télécharger et signer les documents.`,
+          sender: req.user._id,
+          request: finalRequest._id,
+          unit: finalRequest.unit?._id || finalRequest.unit,
+          building: finalRequest.building?._id || finalRequest.building,
+          isRead: false
+        });
+        console.log('[ACCEPT] ✅ Notification envoyée au demandeur pour signature des documents:', requester.email);
       }
     } catch (error) {
       console.error('[ACCEPT] Erreur notification demandeur:', error.message);
@@ -818,19 +1135,19 @@ exports.acceptRequest = async (req, res) => {
 
     // Envoyer une notification au propriétaire de l'unité (si applicable)
     try {
-      if (populatedRequest.unit && (populatedRequest.type === 'location' || populatedRequest.type === 'achat')) {
-        const unit = await Unit.findById(populatedRequest.unit._id || populatedRequest.unit)
+      if (finalRequest.unit && (finalRequest.type === 'location' || finalRequest.type === 'achat')) {
+        const unit = await Unit.findById(finalRequest.unit._id || finalRequest.unit)
           .populate('proprietaire', 'firstName lastName email');
         
         if (unit && unit.proprietaire) {
           const requester = await User.findById(request.createdBy._id || request.createdBy);
-          const unitNumber = populatedRequest.unit.unitNumber || 'N/A';
+          const unitNumber = finalRequest.unit.unitNumber || 'N/A';
           const requesterName = requester ? `${requester.firstName} ${requester.lastName}` : 'Un demandeur';
           
           // Créer une notification détaillée pour le propriétaire
           const Notification = require('../models/Notification');
-          const notificationContent = populatedRequest.generatedDocuments && populatedRequest.generatedDocuments.length > 0
-            ? `La candidature de ${requesterName} pour l'unité ${unitNumber} a été acceptée. ${populatedRequest.generatedDocuments.length} document(s) ${populatedRequest.generatedDocuments.length > 1 ? 'sont' : 'est'} en attente de votre signature.`
+          const notificationContent = finalRequest.generatedDocuments && finalRequest.generatedDocuments.length > 0
+            ? `La candidature de ${requesterName} pour l'unité ${unitNumber} a été acceptée. ${finalRequest.generatedDocuments.length} document(s) ${finalRequest.generatedDocuments.length > 1 ? 'sont' : 'est'} en attente de votre signature.`
             : `La candidature de ${requesterName} pour l'unité ${unitNumber} a été acceptée. Veuillez consulter votre tableau de bord pour plus de détails.`;
           
           await Notification.create({
@@ -839,9 +1156,9 @@ exports.acceptRequest = async (req, res) => {
             title: '✅ Candidature acceptée - Action requise',
             content: notificationContent,
             sender: req.user._id,
-            request: populatedRequest._id,
-            unit: populatedRequest.unit._id || populatedRequest.unit,
-            building: populatedRequest.building?._id || populatedRequest.building,
+            request: finalRequest._id,
+            unit: finalRequest.unit._id || finalRequest.unit,
+            building: finalRequest.building?._id || finalRequest.building,
             isRead: false
           });
           
@@ -856,23 +1173,28 @@ exports.acceptRequest = async (req, res) => {
     // Construire le message de confirmation
     let message = 'Demande acceptée avec succès.';
     
-    if (populatedRequest.generatedDocuments && populatedRequest.generatedDocuments.length > 0) {
-      const docTypes = populatedRequest.generatedDocuments.map(doc => {
+    if (finalRequest.generatedDocuments && finalRequest.generatedDocuments.length > 0) {
+      const docTypes = finalRequest.generatedDocuments.map(doc => {
         return doc.type === 'bail' ? 'bail' : doc.type === 'contrat_vente' ? 'contrat de vente' : 'document';
       }).join(' et ');
-      message += ` Le${populatedRequest.generatedDocuments.length > 1 ? 's' : ''} ${docTypes} ${populatedRequest.generatedDocuments.length > 1 ? 'ont' : 'a'} été généré${populatedRequest.generatedDocuments.length > 1 ? 's' : ''}.`;
+      message += ` Le${finalRequest.generatedDocuments.length > 1 ? 's' : ''} ${docTypes} ${finalRequest.generatedDocuments.length > 1 ? 'ont été générés automatiquement' : 'a été généré automatiquement'} et ${finalRequest.generatedDocuments.length > 1 ? 'ont été envoyés' : 'a été envoyé'} au demandeur pour signature.`;
     }
     
-    if (populatedRequest.initialPayment && populatedRequest.initialPayment.amount > 0) {
-      message += ` Un paiement initial de ${populatedRequest.initialPayment.amount.toFixed(2)} $ est requis.`;
+    if (finalRequest.initialPayment && finalRequest.initialPayment.amount > 0) {
+      message += ` Un paiement initial de ${finalRequest.initialPayment.amount.toFixed(2)} $ sera requis après la signature complète des documents.`;
     }
     
-    message += ' Une notification a été envoyée au demandeur.';
+    message += ' Une notification a été envoyée au demandeur pour qu\'il consulte et signe les documents.';
+
+    console.log('[ACCEPT REQUEST] 📤 Envoi de la réponse finale:', {
+      hasDocuments: !!(finalRequest.generatedDocuments && finalRequest.generatedDocuments.length > 0),
+      documentsCount: finalRequest.generatedDocuments?.length || 0
+    });
 
     return res.status(200).json({
       success: true,
       message: message,
-      data: populatedRequest
+      data: finalRequest
     });
   } catch (error) {
     console.error('[ACCEPT] Erreur:', error);
@@ -1085,16 +1407,61 @@ exports.signDocument = async (req, res) => {
     document.signedAt = new Date();
     document.signedBy = req.user._id;
 
+    console.log('[SIGN DOCUMENT] ✅ Document signé:', {
+      requestId: request._id,
+      documentId: docId,
+      documentType: document.type,
+      documentFilename: document.filename,
+      signedBy: req.user._id,
+      signerEmail: req.user.email,
+      signerRole: req.user.role,
+      signedAt: document.signedAt
+    });
+
     await request.save();
+
+    // Vérifier si tous les documents sont signés
+    let allDocumentsSigned = false;
+    if (request.generatedDocuments && request.generatedDocuments.length > 0) {
+      allDocumentsSigned = request.generatedDocuments.every(doc => doc.signed === true);
+    }
+
+    // Synchroniser toutes les vues après la signature via le service global
+    try {
+      const { syncRequestGlobally } = require('../services/globalSyncService');
+      await syncRequestGlobally(request._id);
+      console.log('[SIGN DOCUMENT] ✅ Synchronisation globale terminée');
+    } catch (syncError) {
+      console.error('[SIGN DOCUMENT] ⚠️  Erreur synchronisation (non bloquante):', syncError);
+    }
 
     // NOTIFICATION: Notifier l'admin, le demandeur et le propriétaire
     try {
       const requester = await User.findById(request.createdBy);
       const adminUsers = await User.find({ role: 'admin', isActive: true });
+      const Notification = require('../models/Notification');
       
       // Notifier l'admin et le demandeur
       if (requester && adminUsers.length > 0) {
         await notifyDocumentSigned(request, requester, req.user);
+      }
+      
+      // Si tous les documents sont signés, notifier l'admin qu'il peut créer un paiement
+      if (allDocumentsSigned && (request.type === 'location' || request.type === 'achat')) {
+        for (const admin of adminUsers) {
+          await Notification.create({
+            user: admin._id,
+            type: 'payment',
+            title: '📄 Documents signés - Créer un paiement',
+            content: `Tous les documents pour la demande "${request.title}" ont été signés. Vous pouvez maintenant créer une demande de paiement pour le client.`,
+            sender: req.user._id,
+            request: request._id,
+            unit: request.unit?._id || request.unit,
+            building: request.building?._id || request.building,
+            isRead: false
+          });
+        }
+        console.log('[SIGN DOCUMENT] ✅ Tous les documents sont signés - Notification envoyée aux admins pour créer un paiement');
       }
       
       // Notifier le propriétaire si c'est le demandeur qui a signé
@@ -1104,7 +1471,6 @@ exports.signDocument = async (req, res) => {
           .populate('proprietaire', 'firstName lastName email');
         
         if (unit && unit.proprietaire) {
-          const Notification = require('../models/Notification');
           await Notification.create({
             user: unit.proprietaire._id,
             type: 'contract',
@@ -1124,7 +1490,6 @@ exports.signDocument = async (req, res) => {
       if (request.unit && (request.type === 'location' || request.type === 'achat') && 
           request.createdBy && request.createdBy.toString() !== req.user._id.toString() && req.user.role === 'proprietaire') {
         if (requester) {
-          const Notification = require('../models/Notification');
           await Notification.create({
             user: requester._id,
             type: 'contract',
@@ -1157,6 +1522,62 @@ exports.signDocument = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || 'Erreur lors de la signature du document'
+    });
+  }
+};
+
+// @desc    Annuler la signature d'un document (Admin uniquement)
+// @route   PUT /api/requests/:id/documents/:docId/unsign
+// @access  Private/Admin
+exports.unsignDocument = async (req, res) => {
+  try {
+    const request = await Request.findById(req.params.id);
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Demande non trouvée'
+      });
+    }
+
+    const docId = req.params.docId;
+    const document = request.generatedDocuments?.find(doc => doc._id.toString() === docId);
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: 'Document non trouvé'
+      });
+    }
+
+    if (!document.signed) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ce document n\'est pas signé'
+      });
+    }
+
+    // Annuler la signature (admin uniquement)
+    document.signed = false;
+    document.signedAt = undefined;
+    document.signedBy = undefined;
+
+    await request.save();
+
+    const populatedRequest = await Request.findById(request._id)
+      .populate('generatedDocuments.signedBy', 'firstName lastName')
+      .populate('createdBy', 'firstName lastName email');
+
+    res.status(200).json({
+      success: true,
+      message: 'Signature du document annulée avec succès',
+      data: populatedRequest
+    });
+  } catch (error) {
+    console.error('[UNSIGN DOCUMENT] Erreur:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Erreur lors de l\'annulation de la signature du document'
     });
   }
 };
@@ -1243,6 +1664,196 @@ exports.initiateInitialPayment = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || 'Erreur lors de la création du paiement'
+    });
+  }
+};
+
+// @desc    Générer manuellement les documents pour une demande acceptée
+// @route   POST /api/requests/:id/generate-documents
+// @access  Private/Admin
+exports.generateDocuments = async (req, res) => {
+  console.log('[GENERATE DOCUMENTS] ⚡ Fonction generateDocuments appelée');
+  console.log('[GENERATE DOCUMENTS]   ID reçu:', req.params.id);
+  console.log('[GENERATE DOCUMENTS]   Method:', req.method);
+  console.log('[GENERATE DOCUMENTS]   URL:', req.originalUrl);
+  console.log('[GENERATE DOCUMENTS]   Path:', req.path);
+  console.log('[GENERATE DOCUMENTS]   User:', req.user ? req.user.email : 'non authentifié');
+  console.log('[GENERATE DOCUMENTS]   Role:', req.user ? req.user.role : 'non authentifié');
+  
+  try {
+    const requestId = String(req.params.id || '').trim().replace(/\s+/g, '');
+    
+    if (!requestId || requestId.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de la demande invalide'
+      });
+    }
+
+    // Récupérer la demande
+    const request = await Request.findById(requestId)
+      .populate('unit', 'unitNumber type size bedrooms rentPrice salePrice building proprietaire')
+      .populate('building', 'name address')
+      .populate('createdBy', 'firstName lastName email phone monthlyIncome numberOfChildren creditScore reputation previousTenant');
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Demande non trouvée'
+      });
+    }
+
+    // Vérifier que la demande est acceptée
+    if (request.status !== 'accepte') {
+      return res.status(400).json({
+        success: false,
+        message: 'Les documents ne peuvent être générés que pour une demande acceptée'
+      });
+    }
+
+    // Vérifier si des documents existent déjà
+    if (request.generatedDocuments && request.generatedDocuments.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Les documents ont déjà été générés pour cette demande'
+      });
+    }
+
+    // Vérifier que la demande a une unité et un building
+    if (!request.unit || !request.building) {
+      return res.status(400).json({
+        success: false,
+        message: 'La demande doit avoir une unité et un immeuble associés pour générer les documents'
+      });
+    }
+
+    const unit = request.unit;
+    const building = request.building;
+    const requester = request.createdBy;
+
+    if (!requester) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le demandeur n\'a pas été trouvé'
+      });
+    }
+
+    // Récupérer le propriétaire de l'unité
+    const Unit = require('../models/Unit');
+    const populatedUnit = await Unit.findById(unit._id || unit)
+      .populate('proprietaire', 'firstName lastName email phone');
+
+    if (!populatedUnit || !populatedUnit.proprietaire) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le propriétaire de l\'unité n\'a pas été trouvé'
+      });
+    }
+
+    const owner = populatedUnit.proprietaire;
+
+    // Générer le document selon le type de demande
+    console.log('[GENERATE DOCUMENTS] 📄 Génération du document:', {
+      type: request.type,
+      unit: unit.unitNumber,
+      building: building.name,
+      requester: `${requester.firstName} ${requester.lastName}`,
+      owner: `${owner.firstName} ${owner.lastName}`
+    });
+
+    let documentResult;
+    if (request.type === 'location') {
+      console.log('[GENERATE DOCUMENTS] 📝 Génération du bail...');
+      documentResult = await generateLeaseAgreement(request, unit, building, requester, owner);
+    } else if (request.type === 'achat') {
+      console.log('[GENERATE DOCUMENTS] 📝 Génération du contrat de vente...');
+      documentResult = await generateSaleAgreement(request, unit, building, requester, owner);
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Type de demande non pris en charge pour la génération de documents'
+      });
+    }
+
+    if (!documentResult || !documentResult.success) {
+      console.error('[GENERATE DOCUMENTS] ❌ Échec de la génération du document:', documentResult);
+      return res.status(500).json({
+        success: false,
+        message: 'La génération du document a échoué'
+      });
+    }
+
+    // Ajouter le document à la demande
+    if (!request.generatedDocuments) {
+      request.generatedDocuments = [];
+    }
+    
+    const uploadsDir = path.join(__dirname, '../uploads');
+    let relativePath;
+    if (path.isAbsolute(documentResult.path)) {
+      relativePath = path.relative(uploadsDir, documentResult.path).replace(/\\/g, '/');
+    } else {
+      relativePath = documentResult.path.replace(/\\/g, '/');
+    }
+    
+    if (!relativePath.startsWith('documents/') && !relativePath.startsWith('/')) {
+      relativePath = 'documents/' + relativePath;
+    }
+    
+    const docType = documentResult.type === 'bail' ? 'bail' : 
+                   documentResult.type === 'contrat_vente' ? 'contrat_vente' : 'autre';
+    
+    const newDocument = {
+      type: docType,
+      filename: documentResult.filename,
+      path: relativePath,
+      signed: false,
+      generatedAt: documentResult.generatedAt || new Date(),
+      signedBy: undefined,
+      signedAt: undefined
+    };
+
+    request.generatedDocuments.push(newDocument);
+    await request.save();
+
+    console.log('[GENERATE DOCUMENTS] ✅ Document généré et ajouté avec succès');
+
+    // Envoyer une notification au demandeur
+    try {
+      const Notification = require('../models/Notification');
+      await Notification.create({
+        user: requester._id,
+        type: 'contract',
+        title: 'Documents générés - Prêt à signer',
+        content: `Les documents pour votre demande ${request.type === 'location' ? 'de location' : 'd\'achat'} de l'unité ${unit.unitNumber} ont été générés. Veuillez les consulter et les signer dans votre tableau de bord.`,
+        sender: req.user._id,
+        request: request._id,
+        unit: unit._id || unit,
+        building: building._id || building
+      });
+      console.log('[GENERATE DOCUMENTS] ✅ Notification envoyée au demandeur');
+    } catch (notifError) {
+      console.error('[GENERATE DOCUMENTS] Erreur notification:', notifError);
+    }
+
+    // Récupérer la demande mise à jour
+    const finalRequest = await Request.findById(requestId)
+      .populate('unit', 'unitNumber type size bedrooms rentPrice salePrice building proprietaire')
+      .populate('building', 'name address')
+      .populate('createdBy', 'firstName lastName email phone')
+      .populate('generatedDocuments.signedBy', 'firstName lastName')
+      .populate('statusHistory.changedBy', 'firstName lastName');
+
+    return res.status(200).json({
+      success: true,
+      message: `Document (${docType === 'bail' ? 'bail de location' : 'contrat de vente'}) généré avec succès. Une notification a été envoyée au demandeur pour qu'il consulte et signe les documents.`,
+      data: finalRequest
+    });
+  } catch (error) {
+    console.error('[GENERATE DOCUMENTS] Erreur:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Impossible de générer les documents pour le moment. Veuillez réessayer plus tard.'
     });
   }
 };
@@ -1517,15 +2128,18 @@ exports.assignUnit = async (req, res) => {
       // Attribuer comme locataire
       unit.locataire = request.createdBy;
       unit.status = 'loue';
+      unit.isAvailable = false;
     } else if (request.type === 'achat') {
       // Attribuer comme propriétaire
       unit.proprietaire = request.createdBy;
       unit.status = 'vendu';
+      unit.isAvailable = false;
       // Libérer l'ancien locataire s'il y en a un
       unit.locataire = null;
     }
 
     await unit.save();
+    console.log(`[ASSIGN UNIT] ✅ Unité ${unit.unitNumber} assignée avec succès - Type: ${request.type}, Status: ${unit.status}, isAvailable: ${unit.isAvailable}`);
 
     // Mettre à jour le statut de la demande
     request.status = 'termine';

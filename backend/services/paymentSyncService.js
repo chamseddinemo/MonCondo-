@@ -67,7 +67,8 @@ async function recordPayment(paymentData) {
     description,
     requestId,
     recipient,
-    paymentMethod = 'autre'
+    paymentMethod = 'autre',
+    status = 'en_attente'
   } = paymentData;
   
   // Vérifier les doublons
@@ -97,10 +98,10 @@ async function recordPayment(paymentData) {
     requestId,
     recipient,
     paymentMethod,
-    status: 'en_attente'
+    status: status || 'en_attente'
   });
   
-  console.log('[PAYMENT SYNC] Nouveau paiement créé:', payment._id);
+  console.log('[PAYMENT SYNC] Nouveau paiement créé:', payment._id, 'avec statut:', payment.status);
   return payment;
 }
 
@@ -143,6 +144,35 @@ async function syncAllPaymentViews(paymentId) {
     // 5. Émettre un événement de synchronisation pour le frontend
     const syncEvent = emitPaymentSyncEvent(payment);
     console.log('[PAYMENT SYNC] 📡 Événement de synchronisation émis:', syncEvent);
+    
+    // Émettre aussi via Socket.io si disponible
+    if (typeof global !== 'undefined' && global.io) {
+      // Émettre un événement spécifique pour les paiements payés
+      if (payment.status === 'paye') {
+        global.io.emit('paymentPaid', {
+          paymentId: payment._id?.toString() || payment._id,
+          requestId: payment.requestId?._id?.toString() || payment.requestId?.toString() || payment.requestId,
+          status: 'paye',
+          amount: payment.amount,
+          paymentMethod: payment.paymentMethod,
+          transactionId: payment.transactionId,
+          paidDate: payment.paidDate,
+          timestamp: new Date().toISOString(),
+          ...syncEvent
+        });
+        console.log('[PAYMENT SYNC] 📡 Événement Socket.io paymentPaid émis');
+      }
+      
+      // Émettre aussi un événement de synchronisation générale
+      global.io.emit('paymentSync', {
+        paymentId: payment._id?.toString() || payment._id,
+        requestId: payment.requestId?._id?.toString() || payment.requestId?.toString() || payment.requestId,
+        status: payment.status,
+        timestamp: new Date().toISOString(),
+        ...syncEvent
+      });
+      console.log('[PAYMENT SYNC] 📡 Événement Socket.io paymentSync émis');
+    }
     
     console.log('[PAYMENT SYNC] ✅ Synchronisation complète terminée pour paiement:', paymentId);
     
@@ -352,15 +382,17 @@ async function updateOverdueStatus() {
   try {
     const now = new Date();
     // Trouver tous les paiements en_attente avec dueDate passée
+    // Limiter à 1000 pour éviter les problèmes de performance
     const overduePayments = await Payment.find({
       status: 'en_attente',
       dueDate: { $lt: now }
-    });
+    }).limit(1000).lean();
 
     if (overduePayments.length > 0) {
       // Mettre à jour leur statut en batch
+      const paymentIds = overduePayments.map(p => p._id);
       await Payment.updateMany(
-        { _id: { $in: overduePayments.map(p => p._id) } },
+        { _id: { $in: paymentIds } },
         { $set: { status: 'en_retard' } }
       );
       console.log(`[PAYMENT SYNC] ✅ ${overduePayments.length} paiement(s) mis à jour en "en_retard"`);
@@ -368,7 +400,9 @@ async function updateOverdueStatus() {
 
     return overduePayments.length;
   } catch (error) {
-    console.error('[PAYMENT SYNC] Erreur mise à jour statuts en retard:', error);
+    console.error('[PAYMENT SYNC] ❌ Erreur mise à jour statuts en retard:', error);
+    console.error('[PAYMENT SYNC] Stack:', error.stack);
+    // Retourner 0 plutôt que de faire échouer la fonction
     return 0;
   }
 }
@@ -407,66 +441,88 @@ async function getOverduePayments(filters = {}) {
  * Met à jour automatiquement les statuts en retard avant de calculer
  */
 async function calculatePaymentStats(filters = {}) {
-  // Mettre à jour les statuts en retard d'abord
-  await updateOverdueStatus();
-  
-  const now = new Date();
-  
-  // Construire les filtres pour les paiements en retard
-  // Note: on doit gérer le cas où filters contient déjà un $or ou d'autres opérateurs
-  const overdueFilters = {
-    ...filters,
-    $or: [
-      { status: 'en_retard' },
-      {
-        status: 'en_attente',
-        dueDate: { $lt: now }
-      }
-    ]
-  };
-  
-  const [
-    total,
-    paid,
-    pending,
-    overdue,
-    totalAmount,
-    paidAmount,
-    pendingAmount,
-    overdueAmount
-  ] = await Promise.all([
-    Payment.countDocuments(filters),
-    Payment.countDocuments({ ...filters, status: 'paye' }),
-    Payment.countDocuments({ ...filters, status: 'en_attente' }),
-    Payment.countDocuments(overdueFilters),
-    Payment.aggregate([
-      { $match: filters },
-      { $group: { _id: null, total: { $sum: '$amount' } } }
-    ]),
-    Payment.aggregate([
-      { $match: { ...filters, status: 'paye' } },
-      { $group: { _id: null, total: { $sum: '$amount' } } }
-    ]),
-    Payment.aggregate([
-      { $match: { ...filters, status: 'en_attente' } },
-      { $group: { _id: null, total: { $sum: '$amount' } } }
-    ]),
-    Payment.aggregate([
-      { $match: overdueFilters },
-      { $group: { _id: null, total: { $sum: '$amount' } } }
-    ])
-  ]);
+  try {
+    // Mettre à jour les statuts en retard d'abord (avec gestion d'erreur)
+    try {
+      await updateOverdueStatus();
+    } catch (updateError) {
+      console.error('[PAYMENT SYNC] ⚠️ Erreur updateOverdueStatus (non bloquante):', updateError.message);
+      // Continuer même si updateOverdueStatus échoue
+    }
+    
+    const now = new Date();
+    
+    // Construire les filtres pour les paiements en retard
+    // Note: on doit gérer le cas où filters contient déjà un $or ou d'autres opérateurs
+    const overdueFilters = {
+      ...filters,
+      $or: [
+        { status: 'en_retard' },
+        {
+          status: 'en_attente',
+          dueDate: { $lt: now }
+        }
+      ]
+    };
+    
+    // Exécuter toutes les requêtes avec gestion d'erreur individuelle
+    const [
+      total,
+      paid,
+      pending,
+      overdue,
+      totalAmount,
+      paidAmount,
+      pendingAmount,
+      overdueAmount
+    ] = await Promise.all([
+      Payment.countDocuments(filters).catch(() => 0),
+      Payment.countDocuments({ ...filters, status: 'paye' }).catch(() => 0),
+      Payment.countDocuments({ ...filters, status: 'en_attente' }).catch(() => 0),
+      Payment.countDocuments(overdueFilters).catch(() => 0),
+      Payment.aggregate([
+        { $match: filters },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]).catch(() => [{ total: 0 }]),
+      Payment.aggregate([
+        { $match: { ...filters, status: 'paye' } },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]).catch(() => [{ total: 0 }]),
+      Payment.aggregate([
+        { $match: { ...filters, status: 'en_attente' } },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]).catch(() => [{ total: 0 }]),
+      Payment.aggregate([
+        { $match: overdueFilters },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]).catch(() => [{ total: 0 }])
+    ]);
 
-  return {
-    total: total || 0,
-    paid: paid || 0,
-    pending: pending || 0,
-    overdue: overdue || 0,
-    totalAmount: totalAmount[0]?.total || 0,
-    paidAmount: paidAmount[0]?.total || 0,
-    pendingAmount: pendingAmount[0]?.total || 0,
-    overdueAmount: overdueAmount[0]?.total || 0
-  };
+    return {
+      total: total || 0,
+      paid: paid || 0,
+      pending: pending || 0,
+      overdue: overdue || 0,
+      totalAmount: totalAmount[0]?.total || 0,
+      paidAmount: paidAmount[0]?.total || 0,
+      pendingAmount: pendingAmount[0]?.total || 0,
+      overdueAmount: overdueAmount[0]?.total || 0
+    };
+  } catch (error) {
+    console.error('[PAYMENT SYNC] ❌ Erreur calculatePaymentStats:', error);
+    console.error('[PAYMENT SYNC] Stack:', error.stack);
+    // Retourner des stats vides en cas d'erreur plutôt que de faire échouer
+    return {
+      total: 0,
+      paid: 0,
+      pending: 0,
+      overdue: 0,
+      totalAmount: 0,
+      paidAmount: 0,
+      pendingAmount: 0,
+      overdueAmount: 0
+    };
+  }
 }
 
 /**
@@ -474,37 +530,55 @@ async function calculatePaymentStats(filters = {}) {
  * C'est la fonction principale que tous les endpoints doivent utiliser
  */
 async function getPaymentsUnified(user, filters = {}) {
-  // Mettre à jour les statuts en retard d'abord
-  await updateOverdueStatus();
-  
-  let query = { ...filters };
-  
-  // Filtres selon le rôle
-  if (user.role === 'locataire') {
-    // Locataire : voir seulement ses paiements
-    query.payer = user._id || user.id;
-  } else if (user.role === 'proprietaire') {
-    // Propriétaire : voir les paiements de ses unités
-    const Unit = require('../models/Unit');
-    const userUnits = await Unit.find({
-      proprietaire: user._id || user.id
-    }).distinct('_id');
-    if (userUnits.length > 0) {
-      query.unit = { $in: userUnits };
-    } else {
-      // Si le propriétaire n'a pas d'unités, retourner un tableau vide
-      return [];
+  try {
+    // Mettre à jour les statuts en retard d'abord (non bloquant)
+    try {
+      await updateOverdueStatus();
+    } catch (updateError) {
+      console.error('[PAYMENT SYNC] ⚠️ Erreur updateOverdueStatus (non bloquante):', updateError.message);
+      // Continuer même si updateOverdueStatus échoue
     }
+    
+    let query = { ...filters };
+    
+    // Filtres selon le rôle
+    if (user.role === 'locataire') {
+      // Locataire : voir seulement ses paiements
+      query.payer = user._id || user.id;
+    } else if (user.role === 'proprietaire') {
+      // Propriétaire : voir les paiements de ses unités
+      const Unit = require('../models/Unit');
+      const userUnits = await Unit.find({
+        proprietaire: user._id || user.id
+      }).distinct('_id');
+      if (userUnits.length > 0) {
+        query.unit = { $in: userUnits };
+      } else {
+        // Si le propriétaire n'a pas d'unités, retourner un tableau vide
+        return [];
+      }
+    }
+    // Admin : voir tous les paiements (pas de filtre supplémentaire)
+    
+    const payments = await Payment.find(query)
+      .populate('payer', 'firstName lastName email')
+      .populate('recipient', 'firstName lastName email')
+      .populate('unit', 'unitNumber')
+      .populate('building', 'name')
+      .sort({ createdAt: -1 })
+      .lean();
+    
+    return payments;
+  } catch (error) {
+    console.error('[PAYMENT SYNC] ❌ Erreur getPaymentsUnified:', error);
+    console.error('[PAYMENT SYNC] Stack:', error.stack);
+    console.error('[PAYMENT SYNC] User:', user?._id, user?.role);
+    console.error('[PAYMENT SYNC] Filters:', filters);
+    
+    // En cas d'erreur, retourner un tableau vide plutôt que de faire échouer
+    // Cela permet à l'application de continuer à fonctionner même en cas d'erreur de base de données
+    return [];
   }
-  // Admin : voir tous les paiements (pas de filtre supplémentaire)
-  
-  return await Payment.find(query)
-    .populate('payer', 'firstName lastName email')
-    .populate('recipient', 'firstName lastName email')
-    .populate('unit', 'unitNumber')
-    .populate('building', 'name')
-    .sort({ createdAt: -1 })
-    .lean();
 }
 
 module.exports = {

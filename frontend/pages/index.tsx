@@ -21,12 +21,14 @@ export default function Home() {
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    // Rediriger automatiquement les propriétaires et locataires vers leur dashboard
+    // Rediriger automatiquement les utilisateurs authentifiés vers leur dashboard
     if (isAuthenticated && user) {
-      if (user.role === 'proprietaire' || user.role === 'locataire') {
-        router.push('/dashboard')
+      // Utiliser replace pour éviter les retours en arrière
+      if (user.role === 'proprietaire' || user.role === 'locataire' || user.role === 'admin') {
+        router.replace('/dashboard')
         return
       }
+      // Les visiteurs peuvent rester sur la page d'accueil
     }
   }, [isAuthenticated, user, router])
 
@@ -76,11 +78,10 @@ export default function Home() {
               <Community />
             </>
           ) : (
-            // Si propriétaire ou locataire, afficher un message de redirection
+            // Si propriétaire ou locataire, redirection en cours
             <div className="min-h-screen pt-20 flex items-center justify-center">
               <div className="text-center">
-                <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
-                <p className="text-gray-600">Redirection vers votre tableau de bord...</p>
+                <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
               </div>
             </div>
           )}

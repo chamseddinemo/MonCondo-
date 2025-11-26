@@ -29,3 +29,21 @@ pandoc DOCUMENTATION_COMPLETE_BACKEND_FRONTEND.md -o DOCUMENTATION_COMPLETE_BACK
 3. Clic droit → "Markdown PDF: Export (docx)"
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

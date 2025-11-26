@@ -116,6 +116,52 @@ exports.updateUser = async (req, res) => {
       runValidators: true
     });
 
+    // Synchroniser le profil dans toutes les demandes qui référencent cet utilisateur
+    try {
+      const Request = require('../models/Request');
+      const { syncAllRequestViews } = require('../services/requestSyncService');
+      
+      // Trouver toutes les demandes créées par cet utilisateur
+      const userRequests = await Request.find({ createdBy: req.params.id }).select('_id');
+      
+      // Synchroniser chaque demande pour mettre à jour le profil
+      await Promise.all(userRequests.map(req => 
+        syncAllRequestViews(req._id).catch(err => 
+          console.error(`[USER UPDATE] Erreur sync demande ${req._id}:`, err)
+        )
+      ));
+      
+      // Émettre un événement de synchronisation global via Socket.io
+      const profileData = {
+        userId: req.params.id,
+        user: {
+          _id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phone: user.phone,
+          role: user.role
+        },
+        timestamp: new Date().toISOString()
+      };
+      
+      if (typeof global !== 'undefined' && global.io) {
+        global.io.emit('userProfileSync', profileData);
+      }
+      
+      // Émettre aussi un événement DOM pour le frontend (si en environnement browser)
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('userProfileSync', {
+          detail: profileData
+        }));
+      }
+      
+      console.log(`[USER UPDATE] ✅ Profil synchronisé dans ${userRequests.length} demande(s)`);
+    } catch (syncError) {
+      console.error('[USER UPDATE] ⚠️  Erreur synchronisation profil (non bloquante):', syncError);
+      // Ne pas faire échouer la mise à jour si la synchronisation échoue
+    }
+
     res.status(200).json({
       success: true,
       data: user
@@ -159,11 +205,12 @@ exports.deleteUser = async (req, res) => {
   }
 };
 
-// @desc    Promouvoir un locataire en propriétaire
+// @desc    Promouvoir un utilisateur (visiteur -> propriétaire ou locataire, locataire -> propriétaire)
 // @route   PUT /api/users/:id/promote
 // @access  Private/Admin
 exports.promoteToOwner = async (req, res) => {
   try {
+    const { role } = req.body;
     const user = await User.findById(req.params.id);
 
     if (!user) {
@@ -173,19 +220,50 @@ exports.promoteToOwner = async (req, res) => {
       });
     }
 
-    if (user.role !== 'locataire') {
+    // Déterminer le nouveau rôle
+    let newRole = role;
+
+    // Si aucun rôle n'est fourni, utiliser la logique par défaut (locataire -> propriétaire)
+    if (!newRole) {
+      if (user.role === 'locataire') {
+        newRole = 'proprietaire';
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: 'Rôle cible requis pour cette promotion'
+        });
+      }
+    }
+
+    // Valider le nouveau rôle
+    if (!['proprietaire', 'locataire'].includes(newRole)) {
       return res.status(400).json({
         success: false,
-        message: 'Seul un locataire peut être promu propriétaire'
+        message: 'Rôle invalide. Les rôles autorisés sont: proprietaire, locataire'
       });
     }
 
-    user.role = 'proprietaire';
+    // Vérifier les transitions autorisées
+    if (user.role === 'visiteur' && ['proprietaire', 'locataire'].includes(newRole)) {
+      // Visiteur peut devenir propriétaire ou locataire
+      user.role = newRole;
+    } else if (user.role === 'locataire' && newRole === 'proprietaire') {
+      // Locataire peut devenir propriétaire
+      user.role = newRole;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: `Transition non autorisée: ${user.role} -> ${newRole}`
+      });
+    }
+
     await user.save();
+
+    const roleLabel = newRole === 'proprietaire' ? 'propriétaire' : 'locataire';
 
     res.status(200).json({
       success: true,
-      message: 'Locataire promu propriétaire avec succès',
+      message: `Utilisateur promu ${roleLabel} avec succès`,
       data: user
     });
   } catch (error) {

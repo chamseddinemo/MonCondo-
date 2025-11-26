@@ -7,7 +7,10 @@ import Footer from '../../../components/Footer'
 import ProtectedRoute from '../../../components/ProtectedRoute'
 import { useAuth } from '../../../contexts/AuthContext'
 import { usePayment } from '../../../contexts/PaymentContext'
+import { useSocket } from '../../../contexts/SocketContext'
+import { useGlobalSync } from '../../../hooks/useGlobalSync'
 import { buildApiUrlWithId, getApiConfig, getAuthToken, getErrorMessage, showSuccessMessage, showErrorMessage } from '@/utils/api'
+import GoogleMapCard from '../../../components/maps/GoogleMapCard'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'
 
@@ -63,6 +66,30 @@ interface Request {
     paidAt?: string
     paymentMethod?: string
   }
+  payments?: Array<{
+    _id: string
+    amount: number
+    status: string
+    type: string
+    description?: string
+    dueDate?: string
+    createdAt: string
+    paidAt?: string
+    paymentMethod?: string
+    transactionId?: string
+    payer?: {
+      _id: string
+      firstName: string
+      lastName: string
+      email: string
+    }
+    recipient?: {
+      _id: string
+      firstName: string
+      lastName: string
+      email: string
+    }
+  }>
   approvedAt?: string
   approvedBy?: {
     firstName: string
@@ -73,6 +100,7 @@ interface Request {
 export default function ProprietaireRequestDetail() {
   const { user: authUser } = useAuth()
   const { refreshPaymentStatus, getPaymentStatus } = usePayment()
+  const { socket, isConnected } = useSocket()
   const router = useRouter()
   const { id } = router.query
   const [request, setRequest] = useState<Request | null>(null)
@@ -80,6 +108,16 @@ export default function ProprietaireRequestDetail() {
   const [error, setError] = useState('')
   const [signingDoc, setSigningDoc] = useState(false)
   const [processingPayment, setProcessingPayment] = useState(false)
+  
+  // Synchronisation automatique globale pour rafraîchir après chaque étape
+  useGlobalSync(async () => {
+    if (id) {
+      const cleanId = String(id).trim().replace(/\s+/g, '')
+      if (cleanId && cleanId.length > 0) {
+        await loadRequest(cleanId)
+      }
+    }
+  }, [id])
   
   // États pour le module de paiement inline
   const [showPaymentOptions, setShowPaymentOptions] = useState(false)
@@ -183,6 +221,95 @@ export default function ProprietaireRequestDetail() {
     }
   }, [request?._id])
 
+  // Écouter les événements Socket.io pour les paiements créés
+  useEffect(() => {
+    if (!socket || !isConnected || !id) {
+      return
+    }
+
+    const requestId = String(id).trim().replace(/\s+/g, '')
+
+    const handlePaymentCreated = (data: any) => {
+      const dataRequestId = data.requestId?.toString() || data.requestId
+      const isForThisRequest = dataRequestId === requestId || dataRequestId?.trim() === requestId
+      const isForMe = data.forUser === authUser?._id || data.userId === authUser?._id
+
+      if (isForThisRequest || isForMe) {
+        console.log('[PROPRIETAIRE REQUEST] 📡 Événement Socket.io paymentCreated reçu:', { requestId, data, isForMe, isForThisRequest })
+        
+        // Mettre à jour l'état local immédiatement pour afficher le paiement instantanément
+        if (request && data.paymentId) {
+          const existingPayment = request.payments?.find((p: any) => p._id === data.paymentId)
+          
+          if (!existingPayment) {
+            // Nouveau paiement - l'ajouter à l'état immédiatement
+            const newPayment = {
+              _id: data.paymentId,
+              amount: data.amount || request.initialPayment?.amount,
+              status: data.status || 'en_attente',
+              type: request.type === 'location' ? 'loyer' : 'achat',
+              createdAt: data.timestamp || new Date().toISOString(),
+              description: `Paiement pour ${request.type === 'location' ? 'location' : 'achat'} - ${request.title}`
+            }
+            
+            setRequest(prev => prev ? {
+              ...prev,
+              payments: [...(prev.payments || []), newPayment]
+            } : null)
+            
+            console.log('[PROPRIETAIRE REQUEST] 💳 Nouveau paiement ajouté à l\'état depuis Socket.io:', newPayment)
+            
+            // Recharger après un court délai pour obtenir les données complètes du serveur
+            setTimeout(() => {
+              loadRequest(requestId)
+            }, 1000)
+          } else {
+            // Paiement existant - juste recharger pour avoir les dernières données
+            setTimeout(() => {
+              loadRequest(requestId)
+            }, 1000)
+          }
+        } else {
+          // Recharger pour obtenir la demande avec le nouveau paiement
+          setTimeout(() => {
+            loadRequest(requestId)
+          }, 800)
+        }
+      }
+    }
+
+    const handleRequestSync = (data: any) => {
+      const dataRequestId = data.requestId?.toString() || data.requestId
+      if (dataRequestId === requestId || dataRequestId?.trim() === requestId) {
+        console.log('[PROPRIETAIRE REQUEST] 📡 Événement Socket.io requestSync reçu pour cette demande:', requestId)
+        setTimeout(() => {
+          loadRequest(requestId)
+        }, 1000)
+      }
+    }
+
+    const handleGlobalSync = (data: any) => {
+      const dataRequestId = data.requestId?.toString() || data.requestId
+      if (dataRequestId === requestId || dataRequestId?.trim() === requestId) {
+        console.log('[PROPRIETAIRE REQUEST] 📡 Événement Socket.io globalSync reçu pour cette demande:', requestId)
+        setTimeout(() => {
+          loadRequest(requestId)
+        }, 1000)
+      }
+    }
+
+    // S'abonner aux événements Socket.io
+    socket.on('paymentCreated', handlePaymentCreated)
+    socket.on('requestSync', handleRequestSync)
+    socket.on('globalSync', handleGlobalSync)
+
+    return () => {
+      socket.off('paymentCreated', handlePaymentCreated)
+      socket.off('requestSync', handleRequestSync)
+      socket.off('globalSync', handleGlobalSync)
+    }
+  }, [socket, isConnected, id, request, authUser?._id])
+
   const loadRequest = async (requestId?: string) => {
     try {
       const token = getAuthToken()
@@ -263,10 +390,28 @@ export default function ProprietaireRequestDetail() {
         }
         
         showSuccessMessage('Document signé avec succès ! L\'administrateur et le demandeur ont été notifiés.')
+        
+        // Vérifier si tous les documents sont maintenant signés
+        const updatedRequest = response.data.data || request;
+        const allDocsSigned = updatedRequest.generatedDocuments && 
+          updatedRequest.generatedDocuments.length > 0 &&
+          updatedRequest.generatedDocuments.every((doc: any) => doc.signed === true);
+        
+        if (allDocsSigned) {
+          showSuccessMessage('✅ Tous les documents sont signés ! L\'administrateur peut maintenant créer la demande de paiement.')
+        }
+        
         // Recharger après un court délai
         setTimeout(() => {
           loadRequest()
         }, 1000)
+        
+        // Émettre un événement de synchronisation
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('requestSync', {
+            detail: { requestId: requestId, action: 'documentSigned' }
+          }));
+        }
       } else {
         showErrorMessage(response.data?.message || 'Une erreur est survenue lors de la signature du document.')
       }
@@ -554,10 +699,40 @@ export default function ProprietaireRequestDetail() {
               await loadRequest()
             }, 2000)
             
-            showSuccessMessage('Paiement effectué avec succès!')
+            showSuccessMessage('✅ Paiement effectué avec succès! L\'unité sera attribuée automatiquement.')
             setPaymentSuccess(true)
             setShowPaymentOptions(false)
             setProcessingPayment(false)
+            
+            // Émettre un événement de synchronisation globale
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('paymentProcessed', {
+                detail: { requestId: request._id, paymentId: paymentId, status: 'paye' }
+              }));
+              window.dispatchEvent(new CustomEvent('requestSync', {
+                detail: { requestId: request._id, action: 'paymentCompleted' }
+              }));
+            }
+            
+            // Attendre un peu pour que l'attribution automatique se fasse
+            setTimeout(async () => {
+              await loadRequest()
+              // Vérifier si l'unité a été assignée
+              const updated = await axios.get(
+                buildApiUrlWithId('requests', request._id),
+                getApiConfig(getAuthToken())
+              )
+              if (updated.data?.success && updated.data.data) {
+                setRequest(updated.data.data)
+                if (updated.data.data.status === 'termine') {
+                  showSuccessMessage('🎉 Félicitations ! L\'unité vous a été attribuée. Vérifiez votre tableau de bord.')
+                  // Rediriger vers le dashboard après 3 secondes
+                  setTimeout(() => {
+                    router.push('/dashboard/proprietaire')
+                  }, 3000)
+                }
+              }
+            }, 3000)
           } else {
             throw new Error(processResponse.data?.message || 'Erreur lors du traitement du paiement')
           }
@@ -711,6 +886,14 @@ export default function ProprietaireRequestDetail() {
     })
   }
 
+  // Calculer ces constantes avant les early returns (avec valeurs par défaut)
+  const hasUnsignedDocuments = request?.generatedDocuments?.some((doc: any) => !doc.signed) || false
+  const allDocumentsSigned = Boolean(
+    request?.generatedDocuments && 
+    request?.generatedDocuments.length > 0 && 
+    request?.generatedDocuments.every((doc: any) => doc.signed)
+  )
+
   if (loading) {
     return (
       <ProtectedRoute requiredRoles={['proprietaire']}>
@@ -746,10 +929,6 @@ export default function ProprietaireRequestDetail() {
       </ProtectedRoute>
     )
   }
-
-  const hasUnsignedDocuments = request.generatedDocuments?.some(doc => !doc.signed) || false
-  const allDocumentsSigned = request.generatedDocuments && request.generatedDocuments.length > 0 && 
-                             request.generatedDocuments.every(doc => doc.signed)
 
   return (
     <ProtectedRoute requiredRoles={['proprietaire']}>
@@ -818,6 +997,19 @@ export default function ProprietaireRequestDetail() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Date de création</label>
                     <p className="text-gray-900">{formatDate(request.createdAt)}</p>
                   </div>
+                </div>
+              </div>
+
+              {/* Carte Google Maps - Afficher si l'immeuble a une adresse */}
+              {request.building?.address && (
+                <div className="card p-6">
+                  <GoogleMapCard
+                    address={request.building.address}
+                    title="Localisation de l'immeuble"
+                    height="400px"
+                  />
+                </div>
+              )}
 
                   {request.approvedAt && (
                     <div>
@@ -921,67 +1113,83 @@ export default function ProprietaireRequestDetail() {
                 </div>
               )}
 
-              {/* Paiement initial */}
-              {request.initialPayment && (
-                <div className="card p-6">
-                  <h2 className="text-2xl font-bold mb-4">Paiement initial</h2>
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Montant</label>
-                      <p className="text-lg font-bold">${formatAmount(request.initialPayment.amount)}</p>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Qui doit payer</label>
-                      <p className="text-gray-900">
-                        {request.type === 'achat' 
-                          ? 'Vous (propriétaire) devez payer ce montant à l\'administrateur'
-                          : 'Le demandeur (locataire) doit payer ce montant'
-                        }
-                      </p>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Statut</label>
-                      <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                        request.initialPayment && request.initialPayment.status === 'paye' 
-                          ? 'bg-green-100 text-green-800' 
-                          : 'bg-yellow-100 text-yellow-800'
-                      }`}>
-                        {request.initialPayment && request.initialPayment.status === 'paye' ? 'Payé' : 'En attente'}
-                      </span>
-                    </div>
-                    {request.initialPayment.paidAt && (
+              {/* Paiement initial - Afficher selon l'état de la demande */}
+              {/* Pour les demandes d'achat: afficher le paiement initial si disponible OU le message d'attente */}
+              {(() => {
+                // Si des paiements existent, les afficher
+                if (request.payments && request.payments.length > 0) {
+                  // Trier les paiements par date de création (plus récent en premier)
+                  const sortedPayments = [...request.payments].sort((a: any, b: any) => {
+                    const dateA = new Date(a.createdAt || 0).getTime()
+                    const dateB = new Date(b.createdAt || 0).getTime()
+                    return dateB - dateA
+                  })
+                  
+                  // Prendre le premier paiement (le plus récent)
+                  const payment = sortedPayments[0]
+                  
+                  if (!payment) return null
+                  
+                  return (
+                  <div className="card p-6">
+                    <h2 className="text-2xl font-bold mb-4">Paiement initial</h2>
+                    <div className="space-y-3">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Date de paiement</label>
-                        <p className="text-gray-900">{formatDate(request.initialPayment.paidAt)}</p>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Montant</label>
+                        <p className="text-lg font-bold">${formatAmount(payment.amount)}</p>
                       </div>
-                    )}
-                    {request.initialPayment.paymentMethod && (
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Méthode de paiement</label>
-                        <p className="text-gray-900">{request.initialPayment.paymentMethod}</p>
-                      </div>
-                    )}
-                    {request.type === 'achat' && request.initialPayment && request.initialPayment.status !== 'paye' && !showPaymentOptions && !paymentSuccess && (
-                      <div className="mt-4 p-3 bg-orange-50 border-l-4 border-orange-500 rounded">
-                        <p className="text-sm text-orange-800 font-semibold mb-2">
-                          ⚠️ Action requise
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Qui doit payer</label>
+                        <p className="text-gray-900">
+                          {request.type === 'achat' 
+                            ? 'Vous (propriétaire) devez payer ce montant à l\'administrateur'
+                            : 'Le demandeur (locataire) doit payer ce montant'
+                          }
                         </p>
-                        <p className="text-xs text-orange-700 mb-3">
-                          Pour finaliser la vente et permettre à l'administrateur d'attribuer l'unité au demandeur, 
-                          vous devez effectuer le paiement initial de ${formatAmount(request.initialPayment.amount)} à l'administrateur.
-                        </p>
-                        <button
-                          onClick={handlePayNow}
-                          disabled={processingPayment}
-                          className="w-full px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          💳 Payer maintenant
-                        </button>
                       </div>
-                    )}
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Statut</label>
+                        <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
+                          payment.status === 'paye' 
+                            ? 'bg-green-100 text-green-800' 
+                            : 'bg-yellow-100 text-yellow-800'
+                        }`}>
+                          {payment.status === 'paye' ? 'Payé' : 'En attente'}
+                        </span>
+                      </div>
+                      {payment.paidAt && (
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Date de paiement</label>
+                          <p className="text-gray-900">{formatDate(payment.paidAt)}</p>
+                        </div>
+                      )}
+                      {payment.paymentMethod && (
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Méthode de paiement</label>
+                          <p className="text-gray-900">{payment.paymentMethod}</p>
+                        </div>
+                      )}
+                      {request.type === 'achat' && payment.status !== 'paye' && !showPaymentOptions && !paymentSuccess && (
+                        <div className="mt-4 p-3 bg-orange-50 border-l-4 border-orange-500 rounded">
+                          <p className="text-sm text-orange-800 font-semibold mb-2">
+                            ⚠️ Action requise
+                          </p>
+                          <p className="text-xs text-orange-700 mb-3">
+                            Pour finaliser la vente et permettre à l'administrateur d'attribuer l'unité au demandeur, 
+                            vous devez effectuer le paiement initial de ${formatAmount(payment.amount)} à l'administrateur.
+                          </p>
+                          <button
+                            onClick={handlePayNow}
+                            disabled={processingPayment}
+                            className="w-full px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            💳 Payer maintenant
+                          </button>
+                        </div>
+                      )}
 
                     {/* Module de paiement inline */}
-                    {showPaymentOptions && request.initialPayment && request.initialPayment.status !== 'paye' && !paymentSuccess && (
+                    {showPaymentOptions && payment && payment.status !== 'paye' && !paymentSuccess && (
                       <div className="mt-4 p-4 bg-white border-2 border-primary-200 rounded-lg">
                         <div className="flex items-center justify-between mb-4">
                           <h3 className="text-lg font-bold text-gray-900">Choisissez votre méthode de paiement</h3>
@@ -1081,6 +1289,156 @@ export default function ProprietaireRequestDetail() {
                         )}
                       </div>
                     )}
+                  </div>
+                </div>
+                  )
+                }
+                
+                // Si aucun paiement mais tous les documents sont signés et c'est un achat
+                if (allDocumentsSigned && request.type === 'achat' && request.initialPayment && (!request.payments || request.payments.length === 0)) {
+                  return (
+                    <div className="card p-6">
+                      <h2 className="text-2xl font-bold mb-4">Paiement initial</h2>
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Montant</label>
+                          <p className="text-lg font-bold">${formatAmount(request.initialPayment.amount)}</p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Qui doit payer</label>
+                          <p className="text-gray-900">
+                            Vous (propriétaire) devez payer ce montant à l'administrateur
+                          </p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Statut</label>
+                          <span className="px-3 py-1 rounded-full text-sm font-semibold bg-yellow-100 text-yellow-800">
+                            En attente de paiement
+                          </span>
+                        </div>
+                        {!showPaymentOptions && !paymentSuccess && (
+                          <div className="mt-4 p-3 bg-orange-50 border-l-4 border-orange-500 rounded">
+                            <p className="text-sm text-orange-800 font-semibold mb-2">
+                              ⚠️ Action requise
+                            </p>
+                            <p className="text-xs text-orange-700 mb-3">
+                              Pour finaliser la vente et permettre à l'administrateur d'attribuer l'unité au demandeur, 
+                              vous devez effectuer le paiement initial de ${formatAmount(request.initialPayment.amount)} à l'administrateur.
+                            </p>
+                            <button
+                              onClick={handlePayNow}
+                              disabled={processingPayment}
+                              className="w-full px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              💳 Payer maintenant
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                }
+                
+                // Si les documents ne sont pas tous signés
+                if (!allDocumentsSigned && request.type === 'achat' && request.initialPayment) {
+                  return (
+                    <div className="card p-6">
+                      <h2 className="text-2xl font-bold mb-4">Paiement initial</h2>
+                      <div className="p-4 bg-blue-50 border-l-4 border-blue-500 rounded">
+                        <p className="text-blue-800 font-semibold">
+                          ⏳ En attente de signature complète
+                        </p>
+                        <p className="text-blue-700 text-sm mt-2">
+                          Le paiement initial sera disponible une fois que tous les documents seront signés.
+                        </p>
+                      </div>
+                    </div>
+                  )
+                }
+                
+                // Si aucun paiement initial défini
+                if (!request.initialPayment && request.type === 'achat') {
+                  return (
+                    <div className="card p-6">
+                      <h2 className="text-2xl font-bold mb-4">Paiement initial</h2>
+                      <div className="p-4 bg-gray-50 border-l-4 border-gray-500 rounded">
+                        <p className="text-gray-800 font-semibold">
+                          ⏳ En attente
+                        </p>
+                        <p className="text-gray-700 text-sm mt-2">
+                          {!allDocumentsSigned 
+                            ? "L'administrateur créera une demande de paiement une fois que tous les documents seront signés. Vous recevrez une notification lorsqu'elle sera disponible."
+                            : "L'administrateur créera une demande de paiement prochainement. Vous recevrez une notification lorsqu'elle sera disponible. Pour les demandes d'achat, vous (propriétaire) devrez effectuer le paiement initial à l'administrateur."}
+                        </p>
+                      </div>
+                    </div>
+                  )
+                }
+                
+                return null
+              })()}
+
+              {/* Demandes de paiement créées par l'admin */}
+              {request.payments && request.payments.length > 0 && (
+                <div className="card p-6">
+                  <h2 className="text-2xl font-bold mb-4">Demandes de paiement créées</h2>
+                  <div className="space-y-3">
+                    {request.payments.map((payment: any) => {
+                      const hasPendingPayment = payment.status === 'en_attente'
+                      return (
+                        <div key={payment._id} className={`p-4 rounded-lg border-2 ${
+                          payment.status === 'paye' ? 'bg-green-50 border-green-300' :
+                          payment.status === 'en_retard' ? 'bg-red-50 border-red-300' :
+                          'bg-yellow-50 border-yellow-300'
+                        }`}>
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="text-lg font-bold">${formatAmount(payment.amount)}</span>
+                                <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                                  payment.status === 'paye' ? 'bg-green-200 text-green-800' :
+                                  payment.status === 'en_retard' ? 'bg-red-200 text-red-800' :
+                                  'bg-yellow-200 text-yellow-800'
+                                }`}>
+                                  {payment.status === 'paye' ? 'Payé' :
+                                   payment.status === 'en_retard' ? 'En retard' :
+                                   'En attente de paiement par le client'}
+                                </span>
+                              </div>
+                              <p className="text-sm text-gray-600 mb-1">
+                                <strong>Créé le:</strong> {new Date(payment.createdAt).toLocaleString('fr-CA')}
+                              </p>
+                              {payment.dueDate && (
+                                <p className="text-sm text-gray-600 mb-1">
+                                  <strong>Échéance:</strong> {new Date(payment.dueDate).toLocaleDateString('fr-CA')}
+                                </p>
+                              )}
+                              {payment.description && (
+                                <p className="text-sm text-gray-600 mt-2">{payment.description}</p>
+                              )}
+                              {payment.paidAt && (
+                                <p className="text-sm text-green-600 mt-1">
+                                  <strong>Payé le:</strong> {new Date(payment.paidAt).toLocaleString('fr-CA')}
+                                </p>
+                              )}
+                              {payment.paymentMethod && (
+                                <p className="text-sm text-gray-600">
+                                  <strong>Méthode:</strong> {payment.paymentMethod}
+                                </p>
+                              )}
+                            </div>
+                            {hasPendingPayment && (
+                              <Link
+                                href={`/payments/${payment._id}/pay`}
+                                className="ml-4 px-6 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors font-semibold text-base whitespace-nowrap shadow-lg hover:shadow-xl"
+                              >
+                                💳 Payer maintenant
+                              </Link>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
               )}

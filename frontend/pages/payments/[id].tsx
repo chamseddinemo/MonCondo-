@@ -438,7 +438,12 @@ export default function PaymentDetail() {
             <div className="card p-6 bg-red-50 border-l-4 border-red-500">
               <h2 className="text-xl font-bold text-red-800 mb-2">Erreur</h2>
               <p className="text-red-700">{error}</p>
-              <Link href="/payments/proprietaire" className="text-primary-600 hover:text-primary-700 mt-4 inline-block">
+              <Link 
+                href={user?.role === 'proprietaire' ? '/payments/proprietaire' : 
+                      user?.role === 'locataire' ? '/payments/locataire' : 
+                      user?.role === 'admin' ? '/payments/admin' : '/payments'} 
+                className="text-primary-600 hover:text-primary-700 mt-4 inline-block"
+              >
                 ← Retour aux paiements
               </Link>
             </div>
@@ -457,7 +462,12 @@ export default function PaymentDetail() {
           <div className="container mx-auto px-4 py-12">
             <div className="card p-6 text-center">
               <p className="text-gray-600">Paiement non trouvé</p>
-              <Link href="/payments/proprietaire" className="text-primary-600 hover:text-primary-700 mt-4 inline-block">
+              <Link 
+                href={user?.role === 'proprietaire' ? '/payments/proprietaire' : 
+                      user?.role === 'locataire' ? '/payments/locataire' : 
+                      user?.role === 'admin' ? '/payments/admin' : '/payments'} 
+                className="text-primary-600 hover:text-primary-700 mt-4 inline-block"
+              >
                 ← Retour aux paiements
               </Link>
             </div>
@@ -475,7 +485,12 @@ export default function PaymentDetail() {
         <div className="container mx-auto px-4 py-12">
           {/* En-tête */}
           <div className="mb-8">
-            <Link href="/payments/proprietaire" className="text-primary-600 hover:text-primary-700 mb-4 inline-block">
+            <Link 
+              href={user?.role === 'proprietaire' ? '/payments/proprietaire' : 
+                    user?.role === 'locataire' ? '/payments/locataire' : 
+                    user?.role === 'admin' ? '/payments/admin' : '/payments'} 
+              className="text-primary-600 hover:text-primary-700 mb-4 inline-block"
+            >
               ← Retour aux paiements
             </Link>
             <div className="flex items-center justify-between">
@@ -853,21 +868,63 @@ export default function PaymentDetail() {
                       Payer maintenant
                     </button>
                   )}
-                  {payment.status === 'paye' && payment.receipt && (
-                    <a
-                      href={payment.receipt}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="block w-full bg-green-600 text-white text-center px-4 py-3 rounded-lg hover:bg-green-700 transition-colors font-medium"
+                  {payment.status === 'paye' && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          setProcessing(true);
+                          setError(null);
+                          
+                          const token = localStorage.getItem('authToken') || localStorage.getItem('token');
+                          const response = await axios.get(`${API_URL}/payments/${payment._id}/receipt`, {
+                            headers: {
+                              'Authorization': `Bearer ${token}`
+                            },
+                            responseType: 'blob'
+                          });
+                          
+                          // Créer un lien de téléchargement
+                          const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
+                          const link = document.createElement('a');
+                          link.href = url;
+                          link.setAttribute('download', `receipt_${payment._id}_${new Date().getTime()}.pdf`);
+                          document.body.appendChild(link);
+                          link.click();
+                          link.remove();
+                          window.URL.revokeObjectURL(url);
+                          
+                          console.log('[PAYMENT] ✅ Reçu téléchargé avec succès');
+                          
+                          // Recharger le paiement pour mettre à jour payment.receipt si nécessaire
+                          setTimeout(() => {
+                            loadPayment();
+                          }, 500);
+                        } catch (err: any) {
+                          console.error('[PAYMENT] ❌ Erreur téléchargement reçu:', err);
+                          const errorMessage = err.response?.data?.message || err.message || 'Erreur lors du téléchargement du reçu';
+                          setError(errorMessage);
+                          
+                          // Afficher une alerte si le reçu n'est pas disponible
+                          if (err.response?.status === 404 || err.response?.status === 400) {
+                            alert(errorMessage);
+                          }
+                        } finally {
+                          setProcessing(false);
+                        }
+                      }}
+                      disabled={processing}
+                      className="block w-full bg-green-600 text-white text-center px-4 py-3 rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium"
                     >
-                      Télécharger le reçu
-                    </a>
+                      {processing ? '⏳ Génération...' : '📄 Télécharger le reçu'}
+                    </button>
                   )}
                   <Link
-                    href="/payments/proprietaire"
+                    href={user?.role === 'proprietaire' ? '/payments/proprietaire' : 
+                          user?.role === 'locataire' ? '/payments/locataire' : 
+                          user?.role === 'admin' ? '/payments/admin' : '/payments'}
                     className="block w-full bg-gray-200 text-gray-700 text-center px-4 py-3 rounded-lg hover:bg-gray-300 transition-colors font-medium"
                   >
-                    Retour à la liste
+                    ← Retour à la liste
                   </Link>
                 </div>
               </div>

@@ -35,6 +35,10 @@ interface Message {
   isSystemMessage?: boolean
   attachments?: any[]
   createdAt: string
+  conversation?: string | {
+    _id: string
+    [key: string]: any
+  }
 }
 
 interface ChatWindowProps {
@@ -178,9 +182,9 @@ export default function ChatWindow({ contact, conversationId, onClose }: ChatWin
         })
         
         // Marquer comme lu automatiquement si c'est un message reçu
-        const isReceivedMessage = (data.message.receiver?._id === authUser?.id || data.message.receiver === authUser?.id) &&
-                                  (data.message.sender._id !== authUser?.id && data.message.sender._id !== authUser?.id)
-        if (isReceivedMessage) {
+        const isReceivedMessage = data.message.receiver?._id === authUser?.id && 
+                                  data.message.sender._id !== authUser?.id
+        if (isReceivedMessage && conversationId) {
           markAsRead(conversationId)
         }
       }

@@ -1,5 +1,6 @@
 import { useState, useEffect, createContext, useContext } from 'react'
 import axios from 'axios'
+import { useAuth } from './AuthContext'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'
 
@@ -37,6 +38,7 @@ interface NotificationContextType {
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined)
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
+  const { user: authUser } = useAuth()
   const [notifications, setNotifications] = useState<Notification[]>([])
   const [stats, setStats] = useState<NotificationStats>({
     totalUnread: 0,
@@ -64,16 +66,41 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       const [requestsRes, paymentsRes, messagesRes, unreadCountRes] = await Promise.all([
         axios.get(`${API_URL}/requests`, {
           headers: { Authorization: `Bearer ${token}` }
-        }).catch(() => ({ data: { success: true, data: [] } })),
+        }).catch((err) => {
+          // Ignorer les erreurs 400/401/403 silencieusement
+          if (err.response?.status === 400 || err.response?.status === 401 || err.response?.status === 403) {
+            return { data: { success: true, data: [] } }
+          }
+          console.warn('[NOTIFICATION] Erreur chargement requests:', err.response?.status || err.message)
+          return { data: { success: true, data: [] } }
+        }),
         axios.get(`${API_URL}/payments`, {
           headers: { Authorization: `Bearer ${token}` }
-        }).catch(() => ({ data: { success: true, data: [] } })),
+        }).catch((err) => {
+          if (err.response?.status === 400 || err.response?.status === 401 || err.response?.status === 403) {
+            return { data: { success: true, data: [] } }
+          }
+          console.warn('[NOTIFICATION] Erreur chargement payments:', err.response?.status || err.message)
+          return { data: { success: true, data: [] } }
+        }),
         axios.get(`${API_URL}/messages/unread`, {
           headers: { Authorization: `Bearer ${token}` }
-        }).catch(() => ({ data: { success: true, data: [], count: 0 } })),
+        }).catch((err) => {
+          if (err.response?.status === 400 || err.response?.status === 401 || err.response?.status === 403) {
+            return { data: { success: true, data: [], count: 0 } }
+          }
+          console.warn('[NOTIFICATION] Erreur chargement messages:', err.response?.status || err.message)
+          return { data: { success: true, data: [], count: 0 } }
+        }),
         axios.get(`${API_URL}/messages/unread/count`, {
           headers: { Authorization: `Bearer ${token}` }
-        }).catch(() => ({ data: { success: true, count: 0 } }))
+        }).catch((err) => {
+          if (err.response?.status === 400 || err.response?.status === 401 || err.response?.status === 403) {
+            return { data: { success: true, count: 0 } }
+          }
+          console.warn('[NOTIFICATION] Erreur chargement count:', err.response?.status || err.message)
+          return { data: { success: true, count: 0 } }
+        })
       ])
 
       // Transform data into notifications
@@ -159,14 +186,30 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       const messageUnreadCount = unreadCountRes.data.success ? unreadCountRes.data.count : 
         notificationsList.filter(n => n.type === 'message' && !n.read).length
       
+      // Log pour déboguer
+      console.log('[NOTIFICATION CONTEXT] 📊 Calcul des stats:', {
+        messageUnreadCountFromBackend: unreadCountRes.data.success ? unreadCountRes.data.count : null,
+        messageUnreadCountFromList: notificationsList.filter(n => n.type === 'message' && !n.read).length,
+        totalMessagesInList: messagesRes.data?.data?.length || 0,
+        unreadMessagesInList: (messagesRes.data?.data || []).filter((msg: any) => !msg.isRead).length,
+        finalMessageUnreadCount: messageUnreadCount,
+        userId: authUser?.id
+      })
+      
       const unreadCount = notificationsList.filter(n => !n.read && n.type !== 'message').length + messageUnreadCount
       const byType = {
         request: notificationsList.filter(n => n.type === 'request' && !n.read).length,
         payment: notificationsList.filter(n => n.type === 'payment' && !n.read).length,
-        message: messageUnreadCount, // Utiliser le compteur exact du backend
+        message: messageUnreadCount, // Utiliser le compteur exact du backend - uniquement les messages NON LUS reçus
         alert: notificationsList.filter(n => n.type === 'alert' && !n.read).length,
         maintenance: notificationsList.filter(n => n.type === 'maintenance' && !n.read).length
       }
+
+      console.log('[NOTIFICATION CONTEXT] ✅ Stats finales:', {
+        totalUnread: unreadCount,
+        byType,
+        messageCount: byType.message
+      })
 
       setStats({
         totalUnread: unreadCount,
@@ -209,6 +252,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   }
 
   useEffect(() => {
+    // Ne charger les notifications que si l'utilisateur est authentifié
+    if (!authUser) {
+      setLoading(false)
+      return
+    }
+
     fetchNotifications()
 
     // Set up auto-refresh every 30 seconds
@@ -245,7 +294,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         if (interval) clearInterval(interval);
       };
     }
-  }, [])
+  }, [authUser])
 
   return (
     <NotificationContext.Provider

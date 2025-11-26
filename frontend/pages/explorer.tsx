@@ -4,10 +4,14 @@ import { useState, useEffect, useMemo } from 'react'
 import Head from 'next/head'
 import Image from 'next/image'
 import Link from 'next/link'
+import { useRouter } from 'next/router'
 import Header from '../components/Header'
 import Footer from '../components/Footer'
 import { publicAxios } from '../utils/axiosInstances'
 import { useSocket } from '../contexts/SocketContext'
+import { getBuildingImagePath, getUnitImagePath, validateImagePath } from '../utils/imageUtils'
+import GoogleMapComponent from '../components/maps/GoogleMap'
+import MapFilters from '../components/maps/MapFilters'
 
 interface Building {
   _id: string
@@ -49,6 +53,7 @@ interface Unit {
 }
 
 export default function Explorer() {
+  const router = useRouter()
   const { socket, isConnected } = useSocket()
   const [activeTab, setActiveTab] = useState<'buildings' | 'units'>('buildings')
   const [buildings, setBuildings] = useState<Building[]>([])
@@ -62,21 +67,50 @@ export default function Explorer() {
   const [bedroomsFilter, setBedroomsFilter] = useState('')
   const [minPrice, setMinPrice] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
+  
+  // État pour la carte
+  const [showMap, setShowMap] = useState(false)
+  const [selectedBuildingId, setSelectedBuildingId] = useState<string | undefined>()
+  const [mapFilters, setMapFilters] = useState({
+    status: undefined as string | undefined,
+    city: undefined as string | undefined,
+    minPrice: undefined as number | undefined,
+    maxPrice: undefined as number | undefined
+  })
 
   // Charger les immeubles
   const loadBuildings = async () => {
     try {
       setError(null)
-      const response = await publicAxios.get('/public/buildings')
+      console.log('[EXPLORER] 🔄 Chargement des immeubles...')
+      const response = await publicAxios.get('/public/buildings', {
+        timeout: 10000
+      })
+      console.log('[EXPLORER] ✅ Réponse immeubles:', response.data)
       if (response.data.success) {
-        setBuildings(response.data.data || [])
+        const buildingsData = response.data.data || []
+        console.log(`[EXPLORER] 📊 ${buildingsData.length} immeubles chargés`)
+        setBuildings(buildingsData)
       } else {
+        console.error('[EXPLORER] ❌ Réponse sans succès:', response.data)
         setError('Erreur lors du chargement des immeubles')
       }
     } catch (err: any) {
-      console.error('Erreur chargement immeubles:', err)
-      const errorMessage = err.response?.data?.message || err.message || 'Erreur lors du chargement des immeubles'
-      setError(errorMessage)
+      console.error('[EXPLORER] ❌ Erreur chargement immeubles:', err)
+      console.error('[EXPLORER] Détails:', {
+        message: err.message,
+        code: err.code,
+        response: err.response?.data,
+        status: err.response?.status,
+        url: err.config?.url
+      })
+      
+      if (err.code === 'ECONNREFUSED' || err.message?.includes('Network Error')) {
+        setError('Impossible de se connecter au serveur. Vérifiez que le backend est démarré sur le port 5000.')
+      } else {
+        const errorMessage = err.response?.data?.message || err.message || 'Erreur lors du chargement des immeubles'
+        setError(errorMessage)
+      }
     }
   }
 
@@ -98,16 +132,46 @@ export default function Explorer() {
       if (minPrice) params.minPrice = minPrice
       if (maxPrice) params.maxPrice = maxPrice
 
-      const response = await publicAxios.get(url, { params })
+      console.log('[EXPLORER] 🔄 Chargement des unités:', url, params)
+      const response = await publicAxios.get(url, { 
+        params,
+        timeout: 10000
+      })
+      console.log('[EXPLORER] ✅ Réponse unités:', response.data)
       if (response.data.success) {
-        setUnits(response.data.data || [])
+        const unitsData = response.data.data || []
+        console.log(`[EXPLORER] 📊 ${unitsData.length} unités chargées`)
+        
+        // Vérifier que toutes les unités ont un _id
+        const unitsWithIds = unitsData.filter((u: Unit) => u._id)
+        const unitsWithoutIds = unitsData.filter((u: Unit) => !u._id)
+        
+        if (unitsWithoutIds.length > 0) {
+          console.warn(`[EXPLORER] ⚠️ ${unitsWithoutIds.length} unité(s) sans _id:`, unitsWithoutIds)
+        }
+        
+        console.log(`[EXPLORER] ✅ ${unitsWithIds.length} unités avec ID valide`)
+        setUnits(unitsData)
       } else {
+        console.error('[EXPLORER] ❌ Réponse sans succès:', response.data)
         setError('Erreur lors du chargement des unités')
       }
     } catch (err: any) {
-      console.error('Erreur chargement unités:', err)
-      const errorMessage = err.response?.data?.message || err.message || 'Erreur lors du chargement des unités'
-      setError(errorMessage)
+      console.error('[EXPLORER] ❌ Erreur chargement unités:', err)
+      console.error('[EXPLORER] Détails:', {
+        message: err.message,
+        code: err.code,
+        response: err.response?.data,
+        status: err.response?.status,
+        url: err.config?.url
+      })
+      
+      if (err.code === 'ECONNREFUSED' || err.message?.includes('Network Error')) {
+        setError('Impossible de se connecter au serveur. Vérifiez que le backend est démarré sur le port 5000.')
+      } else {
+        const errorMessage = err.response?.data?.message || err.message || 'Erreur lors du chargement des unités'
+        setError(errorMessage)
+      }
     }
   }
 
@@ -128,10 +192,15 @@ export default function Explorer() {
 
   // Recharger les unités quand les filtres changent
   useEffect(() => {
-    if (!loading && buildings.length >= 0) {
+    // Éviter les rechargements inutiles pendant le chargement initial
+    if (loading) return
+    
+    // Ne recharger que si on a déjà des données chargées et que les filtres ont changé
+    const hasFilters = cityFilter || typeFilter !== 'all' || bedroomsFilter || minPrice || maxPrice
+    if (hasFilters && (buildings.length >= 0 || units.length >= 0)) {
       loadUnits()
     }
-  }, [cityFilter, typeFilter, bedroomsFilter, minPrice, maxPrice])
+  }, [cityFilter, typeFilter, bedroomsFilter, minPrice, maxPrice, loading])
 
   // Synchronisation en temps réel (optionnelle, si Socket.io est disponible)
   useEffect(() => {
@@ -229,7 +298,7 @@ export default function Explorer() {
       
       <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white pt-20">
         {/* Hero Section */}
-        <div className="bg-gradient-to-r from-primary-600 to-primary-800 text-white py-16">
+        <div className="bg-gradient-to-r from-primary-500 via-primary-600 to-primary-700 text-white py-16">
           <div className="container mx-auto px-4">
             <h1 className="text-4xl md:text-5xl font-bold mb-4">
               🏢 Explorer nos Immeubles & Unités
@@ -299,37 +368,30 @@ export default function Explorer() {
                     className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-2xl transition-shadow duration-300"
                   >
                     {/* Image */}
-                    <div className="relative h-48 bg-gradient-to-br from-primary-400 to-primary-600">
+                    <div className="relative h-48 bg-gradient-to-br from-primary-400 to-primary-600 overflow-hidden">
                       {(() => {
-                        // Déterminer le chemin de l'image
-                        let imageSrc = building.imageUrl
-                        if (building.image) {
-                          if (building.image.startsWith('/images/')) {
-                            imageSrc = building.image
-                          } else {
-                            imageSrc = `/images/immeubles/${building.image}`
-                          }
-                        }
-                        
-                        if (imageSrc) {
-                          return (
-                            <Image
-                              src={imageSrc}
-                              alt={building.name.replace('[EXEMPLE]', '').trim()}
-                              fill
-                              className="object-cover"
-                              sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
-                              onError={(e) => {
-                                const target = e.target as HTMLImageElement
-                                target.src = '/images/default/placeholder.jpg'
-                              }}
-                            />
-                          )
-                        }
+                        const imageSrc = validateImagePath(getBuildingImagePath(building))
+                        // Utiliser unoptimized pour TOUTES les images pour éviter les erreurs 400 de Next.js Image Optimization
+                        // Cela évite les erreurs quand Next.js essaie d'optimiser une image qui n'existe pas
                         return (
-                          <div className="w-full h-full flex items-center justify-center text-white text-6xl">
-                            🏢
-                          </div>
+                          <Image
+                            src={imageSrc}
+                            alt={building.name.replace('[EXEMPLE]', '').trim()}
+                            fill
+                            className="object-cover"
+                            sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+                            unoptimized={true}
+                            priority={false}
+                            onError={(e) => {
+                              const target = e.target as HTMLImageElement
+                              // Si l'erreur persiste, utiliser le placeholder
+                              const fallback = '/images/default/placeholder.jpg'
+                              console.warn(`[EXPLORER] ⚠️ Erreur chargement image: ${target.src}, utilisation fallback`)
+                              if (!target.src.includes('placeholder.jpg')) {
+                                target.src = fallback
+                              }
+                            }}
+                          />
                         )
                       })()}
                     </div>
@@ -370,16 +432,61 @@ export default function Explorer() {
                         </div>
                       </div>
 
-                      {/* Button */}
-                      <button
-                        onClick={() => {
-                          setActiveTab('units')
-                          scrollToSection('units-section')
-                        }}
-                        className="w-full btn-primary"
-                      >
-                        Voir les unités de cet immeuble
-                      </button>
+                      {/* Buttons */}
+                      <div className="flex gap-2">
+                        {building._id ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              const targetUrl = `/buildings/${building._id}`
+                              console.log('[EXPLORER] 🚀 Navigation vers:', targetUrl, 'Building ID:', building._id)
+                              
+                              // Forcer la navigation avec plusieurs méthodes
+                              try {
+                                // Méthode 1: router.push() avec await
+                                router.push(targetUrl).then(() => {
+                                  console.log('[EXPLORER] ✅ Navigation réussie avec router.push()')
+                                }).catch((err) => {
+                                  console.error('[EXPLORER] ❌ Erreur router.push():', err)
+                                  // Fallback: utiliser window.location
+                                  console.log('[EXPLORER] 🔄 Tentative avec window.location.href')
+                                  window.location.href = targetUrl
+                                })
+                              } catch (error) {
+                                console.error('[EXPLORER] ❌ Erreur dans onClick:', error)
+                                // Fallback absolu
+                                window.location.href = targetUrl
+                              }
+                            }}
+                            className="flex-1 btn-primary text-center"
+                          >
+                            Voir les détails
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled
+                            className="flex-1 btn-primary text-center opacity-50 cursor-not-allowed"
+                            title="ID d'immeuble manquant"
+                            onClick={() => console.warn('[EXPLORER] ⚠️ ID manquant pour navigation')}
+                          >
+                            Voir les détails
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            setActiveTab('units')
+                            scrollToSection('units-section')
+                          }}
+                          className="flex-1 btn-secondary"
+                        >
+                          Voir les unités
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -469,8 +576,20 @@ export default function Explorer() {
                 <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
                 <p className="mt-4 text-gray-600">Chargement des unités...</p>
               </div>
+            ) : error && error.includes('connexion') ? (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+                <p className="font-semibold mb-2">⚠️ Erreur de connexion</p>
+                <p className="mb-4">{error}</p>
+                <div className="bg-white p-4 rounded border border-red-200">
+                  <p className="font-semibold mb-2">Solution :</p>
+                  <ol className="list-decimal list-inside space-y-1 text-sm">
+                    <li>Vérifiez que le backend est démarré sur le port 5000</li>
+                    <li>Rechargez cette page (F5)</li>
+                  </ol>
+                </div>
+              </div>
             ) : error ? (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
                 {error}
               </div>
             ) : (
@@ -483,47 +602,34 @@ export default function Explorer() {
                       À Louer ({rentUnits.length})
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {rentUnits.map((unit) => (
+                      {rentUnits.map((unit) => {
+                        // Log pour déboguer
+                        if (!unit._id) {
+                          console.error('[EXPLORER] ⚠️ Unit sans _id:', unit)
+                        }
+                        return (
                         <div
-                          key={unit._id}
+                          key={unit._id || `unit-${unit.unitNumber}-${Math.random()}`}
                           className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-2xl transition-shadow duration-300"
                         >
-                          <div className="relative h-48 bg-gradient-to-br from-blue-400 to-blue-600">
-                            {(() => {
-                              // Déterminer le chemin de l'image
-                              let imageSrc = unit.imageUrl
-                              if (unit.images && unit.images.length > 0) {
-                                const firstImage = unit.images[0]
-                                if (firstImage.startsWith('/images/')) {
-                                  imageSrc = firstImage
-                                } else if (firstImage.startsWith('http')) {
-                                  imageSrc = firstImage
-                                } else {
-                                  imageSrc = `/images/unites/${firstImage}`
+                          <div className="relative h-48 bg-gradient-to-br from-blue-400 to-blue-600 overflow-hidden">
+                            <Image
+                              src={validateImagePath(getUnitImagePath(unit))}
+                              alt={`Unité ${unit.unitNumber}`}
+                              fill
+                              className="object-cover"
+                              sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+                              unoptimized={true}
+                              priority={false}
+                              onError={(e) => {
+                                const target = e.target as HTMLImageElement
+                                const fallback = '/images/default/placeholder.jpg'
+                                console.warn(`[EXPLORER] ⚠️ Erreur chargement image unité: ${target.src}, utilisation fallback`)
+                                if (!target.src.includes('placeholder.jpg')) {
+                                  target.src = fallback
                                 }
-                              }
-                              
-                              if (imageSrc) {
-                                return (
-                                  <Image
-                                    src={imageSrc}
-                                    alt={`Unité ${unit.unitNumber}`}
-                                    fill
-                                    className="object-cover"
-                                    sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
-                                    onError={(e) => {
-                                      const target = e.target as HTMLImageElement
-                                      target.src = '/images/default/placeholder.jpg'
-                                    }}
-                                  />
-                                )
-                              }
-                              return (
-                                <div className="w-full h-full flex items-center justify-center text-white text-6xl">
-                                  🏠
-                                </div>
-                              )
-                            })()}
+                              }}
+                            />
                             <div className="absolute top-4 right-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm font-semibold">
                               Disponible
                             </div>
@@ -557,22 +663,114 @@ export default function Explorer() {
                             </div>
 
                             <div className="flex gap-2">
-                              <Link
-                                href={`/units/${unit._id}`}
-                                className="flex-1 btn-secondary text-center"
-                              >
-                                En savoir plus
-                              </Link>
-                              <Link
-                                href={`/request?unit=${unit._id}`}
-                                className="flex-1 btn-primary text-center"
-                              >
-                                Faire une demande
-                              </Link>
+                              {unit._id ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    
+                                    if (!unit._id || unit._id === 'undefined' || unit._id === 'null') {
+                                      console.error('[EXPLORER] ❌ ID invalide:', unit._id, 'Unit:', unit)
+                                      alert(`Erreur: ID d'unité invalide. Veuillez contacter le support.`)
+                                      return
+                                    }
+                                    
+                                    const targetUrl = `/units/${unit._id}`
+                                    console.log('[EXPLORER] 🚀 Navigation vers:', targetUrl)
+                                    console.log('[EXPLORER] 📋 Détails unité:', {
+                                      id: unit._id,
+                                      unitNumber: unit.unitNumber,
+                                      type: unit.type,
+                                      building: unit.building?.name
+                                    })
+                                    
+                                    const navPromise = router.push(targetUrl)
+                                    const timeout = setTimeout(() => {
+                                      console.warn('[EXPLORER] ⏱️ Timeout navigation, utilisation window.location')
+                                      window.location.href = targetUrl
+                                    }, 1000)
+                                    
+                                    navPromise
+                                      .then(() => {
+                                        clearTimeout(timeout)
+                                        console.log('[EXPLORER] ✅ Navigation réussie avec router.push()')
+                                      })
+                                      .catch((err) => {
+                                        clearTimeout(timeout)
+                                        console.error('[EXPLORER] ❌ Erreur router.push():', err)
+                                        console.log('[EXPLORER] 🔄 Fallback: window.location.href')
+                                        window.location.href = targetUrl
+                                      })
+                                  }}
+                                  className="flex-1 btn-secondary text-center"
+                                >
+                                  En savoir plus
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled
+                                  className="flex-1 btn-secondary text-center opacity-50 cursor-not-allowed"
+                                  title="ID d'unité manquant"
+                                  onClick={() => {
+                                    console.error('[EXPLORER] ⚠️ Tentative de clic sur bouton désactivé - Unit:', unit)
+                                  }}
+                                >
+                                  En savoir plus
+                                </button>
+                              )}
+                              {unit._id ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    
+                                    if (!unit._id || unit._id === 'undefined' || unit._id === 'null') {
+                                      console.error('[EXPLORER] ❌ ID invalide pour demande:', unit._id)
+                                      return
+                                    }
+                                    
+                                    const targetUrl = `/request?unitId=${unit._id}`
+                                    console.log('[EXPLORER] 🚀 Navigation vers:', targetUrl)
+                                    
+                                    const navPromise = router.push(targetUrl)
+                                    const timeout = setTimeout(() => {
+                                      console.warn('[EXPLORER] ⏱️ Timeout navigation, utilisation window.location')
+                                      window.location.href = targetUrl
+                                    }, 1000)
+                                    
+                                    navPromise
+                                      .then(() => {
+                                        clearTimeout(timeout)
+                                        console.log('[EXPLORER] ✅ Navigation réussie avec router.push()')
+                                      })
+                                      .catch((err) => {
+                                        clearTimeout(timeout)
+                                        console.error('[EXPLORER] ❌ Erreur router.push():', err)
+                                        window.location.href = targetUrl
+                                      })
+                                  }}
+                                  className="flex-1 btn-primary text-center"
+                                >
+                                  Faire une demande
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled
+                                  className="flex-1 btn-primary text-center opacity-50 cursor-not-allowed"
+                                  title="ID d'unité manquant"
+                                >
+                                  Faire une demande
+                                </button>
+                              )}
                             </div>
                           </div>
                         </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   </div>
                 )}
@@ -585,47 +783,34 @@ export default function Explorer() {
                       À Vendre ({saleUnits.length})
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {saleUnits.map((unit) => (
+                      {saleUnits.map((unit) => {
+                        // Log pour déboguer
+                        if (!unit._id) {
+                          console.error('[EXPLORER] ⚠️ Unit sans _id:', unit)
+                        }
+                        return (
                         <div
-                          key={unit._id}
+                          key={unit._id || `unit-${unit.unitNumber}-${Math.random()}`}
                           className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-2xl transition-shadow duration-300"
                         >
-                          <div className="relative h-48 bg-gradient-to-br from-purple-400 to-purple-600">
-                            {(() => {
-                              // Déterminer le chemin de l'image
-                              let imageSrc = unit.imageUrl
-                              if (unit.images && unit.images.length > 0) {
-                                const firstImage = unit.images[0]
-                                if (firstImage.startsWith('/images/')) {
-                                  imageSrc = firstImage
-                                } else if (firstImage.startsWith('http')) {
-                                  imageSrc = firstImage
-                                } else {
-                                  imageSrc = `/images/unites/${firstImage}`
+                          <div className="relative h-48 bg-gradient-to-br from-purple-400 to-purple-600 overflow-hidden">
+                            <Image
+                              src={validateImagePath(getUnitImagePath(unit))}
+                              alt={`Unité ${unit.unitNumber}`}
+                              fill
+                              className="object-cover"
+                              sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+                              unoptimized={true}
+                              priority={false}
+                              onError={(e) => {
+                                const target = e.target as HTMLImageElement
+                                const fallback = '/images/default/placeholder.jpg'
+                                console.warn(`[EXPLORER] ⚠️ Erreur chargement image unité: ${target.src}, utilisation fallback`)
+                                if (!target.src.includes('placeholder.jpg')) {
+                                  target.src = fallback
                                 }
-                              }
-                              
-                              if (imageSrc) {
-                                return (
-                                  <Image
-                                    src={imageSrc}
-                                    alt={`Unité ${unit.unitNumber}`}
-                                    fill
-                                    className="object-cover"
-                                    sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
-                                    onError={(e) => {
-                                      const target = e.target as HTMLImageElement
-                                      target.src = '/images/default/placeholder.jpg'
-                                    }}
-                                  />
-                                )
-                              }
-                              return (
-                                <div className="w-full h-full flex items-center justify-center text-white text-6xl">
-                                  🏠
-                                </div>
-                              )
-                            })()}
+                              }}
+                            />
                             <div className="absolute top-4 right-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm font-semibold">
                               Disponible
                             </div>
@@ -659,22 +844,114 @@ export default function Explorer() {
                             </div>
 
                             <div className="flex gap-2">
-                              <Link
-                                href={`/units/${unit._id}`}
-                                className="flex-1 btn-secondary text-center"
-                              >
-                                En savoir plus
-                              </Link>
-                              <Link
-                                href={`/request?unit=${unit._id}`}
-                                className="flex-1 btn-primary text-center"
-                              >
-                                Faire une demande
-                              </Link>
+                              {unit._id ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    
+                                    if (!unit._id || unit._id === 'undefined' || unit._id === 'null') {
+                                      console.error('[EXPLORER] ❌ ID invalide:', unit._id, 'Unit:', unit)
+                                      alert(`Erreur: ID d'unité invalide. Veuillez contacter le support.`)
+                                      return
+                                    }
+                                    
+                                    const targetUrl = `/units/${unit._id}`
+                                    console.log('[EXPLORER] 🚀 Navigation vers:', targetUrl)
+                                    console.log('[EXPLORER] 📋 Détails unité:', {
+                                      id: unit._id,
+                                      unitNumber: unit.unitNumber,
+                                      type: unit.type,
+                                      building: unit.building?.name
+                                    })
+                                    
+                                    const navPromise = router.push(targetUrl)
+                                    const timeout = setTimeout(() => {
+                                      console.warn('[EXPLORER] ⏱️ Timeout navigation, utilisation window.location')
+                                      window.location.href = targetUrl
+                                    }, 1000)
+                                    
+                                    navPromise
+                                      .then(() => {
+                                        clearTimeout(timeout)
+                                        console.log('[EXPLORER] ✅ Navigation réussie avec router.push()')
+                                      })
+                                      .catch((err) => {
+                                        clearTimeout(timeout)
+                                        console.error('[EXPLORER] ❌ Erreur router.push():', err)
+                                        console.log('[EXPLORER] 🔄 Fallback: window.location.href')
+                                        window.location.href = targetUrl
+                                      })
+                                  }}
+                                  className="flex-1 btn-secondary text-center"
+                                >
+                                  En savoir plus
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled
+                                  className="flex-1 btn-secondary text-center opacity-50 cursor-not-allowed"
+                                  title="ID d'unité manquant"
+                                  onClick={() => {
+                                    console.error('[EXPLORER] ⚠️ Tentative de clic sur bouton désactivé - Unit:', unit)
+                                  }}
+                                >
+                                  En savoir plus
+                                </button>
+                              )}
+                              {unit._id ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    
+                                    if (!unit._id || unit._id === 'undefined' || unit._id === 'null') {
+                                      console.error('[EXPLORER] ❌ ID invalide pour demande:', unit._id)
+                                      return
+                                    }
+                                    
+                                    const targetUrl = `/request?unitId=${unit._id}`
+                                    console.log('[EXPLORER] 🚀 Navigation vers:', targetUrl)
+                                    
+                                    const navPromise = router.push(targetUrl)
+                                    const timeout = setTimeout(() => {
+                                      console.warn('[EXPLORER] ⏱️ Timeout navigation, utilisation window.location')
+                                      window.location.href = targetUrl
+                                    }, 1000)
+                                    
+                                    navPromise
+                                      .then(() => {
+                                        clearTimeout(timeout)
+                                        console.log('[EXPLORER] ✅ Navigation réussie avec router.push()')
+                                      })
+                                      .catch((err) => {
+                                        clearTimeout(timeout)
+                                        console.error('[EXPLORER] ❌ Erreur router.push():', err)
+                                        window.location.href = targetUrl
+                                      })
+                                  }}
+                                  className="flex-1 btn-primary text-center"
+                                >
+                                  Faire une demande
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled
+                                  className="flex-1 btn-primary text-center opacity-50 cursor-not-allowed"
+                                  title="ID d'unité manquant"
+                                >
+                                  Faire une demande
+                                </button>
+                              )}
                             </div>
                           </div>
                         </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   </div>
                 )}

@@ -4,6 +4,13 @@ const upload = require('../middlewares/upload');
 const path = require('path');
 const fs = require('fs');
 const { protect } = require('../middlewares/auth');
+const { uploadUnitImages, uploadBuildingImages, imageUpload } = require('../controllers/imageUploadController');
+
+// Log pour confirmer que les routes sont chargées
+console.log('[UPLOAD ROUTES] ✅ Routes d\'upload chargées');
+console.log('[UPLOAD ROUTES]   - POST /upload/units/images (avec traitement avancé)');
+console.log('[UPLOAD ROUTES]   - POST /upload/buildings/images (avec traitement avancé)');
+console.log('[UPLOAD ROUTES]   - POST /upload/messages');
 
 router.use(protect);
 
@@ -39,5 +46,10 @@ router.post('/messages', upload.array('files', 10), async (req, res) => {
   }
 });
 
-module.exports = router;
+// Route pour uploader des images d'unités (avec traitement avancé: redimensionnement, compression, WebP)
+router.post('/units/images', imageUpload.array('images', 10), uploadUnitImages);
 
+// Route pour uploader des images d'immeubles (avec traitement avancé: redimensionnement, compression, WebP)
+router.post('/buildings/images', imageUpload.array('images', 10), uploadBuildingImages);
+
+module.exports = router;

@@ -104,3 +104,21 @@ Après redémarrage, la page `/admin/buildings` devrait :
 - ✅ Ne plus afficher le message d'erreur "Route non trouvée"
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

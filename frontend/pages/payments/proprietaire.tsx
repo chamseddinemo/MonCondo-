@@ -5,6 +5,7 @@ import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
 import { usePayment } from '../../contexts/PaymentContext';
 import { usePaymentSync } from '../../hooks/usePaymentSync';
+import { useSocket } from '../../contexts/SocketContext';
 import Header from '../../components/Header';
 import Footer from '../../components/Footer';
 import ProtectedRoute from '../../components/ProtectedRoute';
@@ -84,9 +85,22 @@ export default function ProprietairePayments() {
         setError(response.data.message || 'Erreur lors du chargement des paiements');
       }
     } catch (err: any) {
-      console.error('Erreur chargement paiements:', err);
+      console.error('[PAYMENTS PAGE] ❌ Erreur chargement paiements:', err);
+      console.error('[PAYMENTS PAGE] Détails:', {
+        status: err.response?.status,
+        message: err.response?.data?.message,
+        url: err.config?.url
+      });
+      
       if (err.response?.status === 403) {
         setError('Vous n\'êtes pas autorisé à accéder à cette page. Veuillez vérifier votre session.');
+      } else if (err.response?.status >= 500) {
+        const serverMessage = err.response?.data?.message || '';
+        setError(serverMessage || 'Erreur serveur. Le serveur est en cours d\'exécution mais n\'a pas pu traiter votre demande. Veuillez réessayer plus tard.');
+      } else if (err.response?.status === 404) {
+        setError('Route non trouvée. Vérifiez que le backend est démarré et que la route existe.');
+      } else if (!err.response && err.request) {
+        setError('Impossible de se connecter au serveur. Vérifiez que le backend est démarré sur le port 5000.');
       } else {
         setError(err.response?.data?.message || 'Erreur lors du chargement des paiements');
       }
@@ -105,9 +119,42 @@ export default function ProprietairePayments() {
       });
       if (response.data.success) {
         setStats(response.data.data);
+      } else {
+        console.error('[PAYMENTS PAGE] ⚠️ Stats non disponibles:', response.data.message);
+        // Initialiser avec des stats vides plutôt que de laisser null
+        setStats({
+          totalPaid: 0,
+          totalPending: 0,
+          totalOverdue: 0,
+          paidCount: 0,
+          pendingCount: 0,
+          overdueCount: 0,
+          totalAmount: 0,
+          paidAmount: 0,
+          pendingAmount: 0,
+          overdueAmount: 0
+        });
       }
-    } catch (err) {
-      console.error('Erreur chargement stats:', err);
+    } catch (err: any) {
+      console.error('[PAYMENTS PAGE] ❌ Erreur chargement stats:', err);
+      console.error('[PAYMENTS PAGE] Détails:', {
+        status: err.response?.status,
+        message: err.response?.data?.message
+      });
+      
+      // Initialiser avec des stats vides en cas d'erreur
+      setStats({
+        totalPaid: 0,
+        totalPending: 0,
+        totalOverdue: 0,
+        paidCount: 0,
+        pendingCount: 0,
+        overdueCount: 0,
+        totalAmount: 0,
+        paidAmount: 0,
+        pendingAmount: 0,
+        overdueAmount: 0
+      });
     }
   };
 
@@ -116,8 +163,43 @@ export default function ProprietairePayments() {
     await Promise.all([loadPayments(), loadStats()]);
   };
 
-  // Utiliser le hook de synchronisation centralisé
+  // Utiliser le hook de synchronisation centralisé avec rafraîchissement automatique
   usePaymentSync(refreshData, [user?._id, filter]);
+  
+  // Utiliser Socket.io pour synchronisation en temps réel
+  const { socket, connected } = useSocket();
+  
+  // Écouter les événements Socket.io pour synchronisation en temps réel
+  useEffect(() => {
+    if (!socket || !connected) return;
+    
+    const handlePaymentSync = () => {
+      console.log('[PAYMENTS PAGE] 🔄 Événement paymentSync reçu, rafraîchissement...');
+      refreshData();
+    };
+    
+    const handlePaymentPaid = () => {
+      console.log('[PAYMENTS PAGE] ✅ Événement paymentPaid reçu, rafraîchissement...');
+      refreshData();
+    };
+    
+    const handleGlobalSync = (data: any) => {
+      if (data.type === 'payment') {
+        console.log('[PAYMENTS PAGE] 🔄 Événement globalSync (payment) reçu, rafraîchissement...');
+        refreshData();
+      }
+    };
+    
+    socket.on('paymentSync', handlePaymentSync);
+    socket.on('paymentPaid', handlePaymentPaid);
+    socket.on('globalSync', handleGlobalSync);
+    
+    return () => {
+      socket.off('paymentSync', handlePaymentSync);
+      socket.off('paymentPaid', handlePaymentPaid);
+      socket.off('globalSync', handleGlobalSync);
+    };
+  }, [socket, connected]);
 
   const formatPrice = (price?: number) => price ? `$${price.toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A';
   const formatDate = (dateString?: string) => {
@@ -170,19 +252,23 @@ export default function ProprietairePayments() {
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
               <div className="card p-6 bg-gradient-to-br from-blue-500 to-blue-600 text-white">
                 <p className="text-blue-100 text-sm mb-1">Total reçu</p>
-                <p className="text-3xl font-bold">{formatPrice(stats.totalPaid)}</p>
+                <p className="text-3xl font-bold">{formatPrice(stats.totalAmount || stats.totalPaid)}</p>
+                <p className="text-blue-100 text-xs mt-1">{stats.paidCount || stats.totalPaid || 0} paiement(s) payé(s)</p>
               </div>
               <div className="card p-6 bg-gradient-to-br from-yellow-500 to-yellow-600 text-white">
                 <p className="text-yellow-100 text-sm mb-1">En attente</p>
-                <p className="text-3xl font-bold">{stats.pendingCount || 0}</p>
+                <p className="text-3xl font-bold">{stats.pendingCount || stats.totalPending || 0}</p>
+                <p className="text-yellow-100 text-xs mt-1">{formatPrice(stats.pendingAmount || 0)}</p>
               </div>
               <div className="card p-6 bg-gradient-to-br from-red-500 to-red-600 text-white">
                 <p className="text-red-100 text-sm mb-1">En retard</p>
-                <p className="text-3xl font-bold">{stats.overdueCount || 0}</p>
+                <p className="text-3xl font-bold">{stats.overdueCount || stats.totalOverdue || 0}</p>
+                <p className="text-red-100 text-xs mt-1">{formatPrice(stats.overdueAmount || 0)}</p>
               </div>
               <div className="card p-6 bg-gradient-to-br from-green-500 to-green-600 text-white">
                 <p className="text-green-100 text-sm mb-1">Payés</p>
-                <p className="text-3xl font-bold">{stats.paidCount || 0}</p>
+                <p className="text-3xl font-bold">{stats.paidCount || stats.totalPaid || 0}</p>
+                <p className="text-green-100 text-xs mt-1">{formatPrice(stats.paidAmount || stats.totalAmount || 0)}</p>
               </div>
             </div>
           )}
@@ -225,14 +311,70 @@ export default function ProprietairePayments() {
             </div>
           </div>
 
-          {/* Liste des paiements */}
+          {/* Liste des paiements - Organisés par unité */}
           {error ? (
             <div className="card p-6 bg-red-50 border-l-4 border-red-500">
               <p className="text-red-800">{error}</p>
             </div>
           ) : payments.length > 0 ? (
-            <div className="space-y-4">
-              {payments.map((payment) => {
+            <div className="space-y-6">
+              {/* Grouper les paiements par unité */}
+              {(() => {
+                // Grouper par unité
+                const paymentsByUnit: { [key: string]: Payment[] } = {};
+                payments.forEach(payment => {
+                  const unitId = payment.unit?._id || payment.unit || 'unknown';
+                  if (!paymentsByUnit[unitId]) {
+                    paymentsByUnit[unitId] = [];
+                  }
+                  paymentsByUnit[unitId].push(payment);
+                });
+
+                // Calculer les totaux par unité
+                const unitStats: { [key: string]: { total: number; paid: number; pending: number; overdue: number } } = {};
+                Object.keys(paymentsByUnit).forEach(unitId => {
+                  const unitPayments = paymentsByUnit[unitId];
+                  unitStats[unitId] = {
+                    total: unitPayments.reduce((sum, p) => sum + (p.amount || 0), 0),
+                    paid: unitPayments.filter(p => p.status === 'paye').reduce((sum, p) => sum + (p.amount || 0), 0),
+                    pending: unitPayments.filter(p => p.status === 'en_attente').reduce((sum, p) => sum + (p.amount || 0), 0),
+                    overdue: unitPayments.filter(p => p.status === 'en_retard' || (p.status === 'en_attente' && p.dueDate && new Date(p.dueDate) < new Date())).reduce((sum, p) => sum + (p.amount || 0), 0)
+                  };
+                });
+
+                return Object.keys(paymentsByUnit).map(unitId => {
+                  const unitPayments = paymentsByUnit[unitId];
+                  const firstPayment = unitPayments[0];
+                  const unitNumber = firstPayment.unit?.unitNumber || 'Inconnue';
+                  const buildingName = firstPayment.building?.name || 'Immeuble inconnu';
+                  const stats = unitStats[unitId];
+
+                  return (
+                    <div key={unitId} className="card p-6 border-l-4 border-primary-500">
+                      {/* En-tête de l'unité */}
+                      <div className="mb-4 pb-4 border-b border-gray-200">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h3 className="text-xl font-bold text-gray-900">
+                              🏠 Unité {unitNumber}
+                            </h3>
+                            <p className="text-sm text-gray-600">{buildingName}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-xs text-gray-500 mb-1">Total unité</p>
+                            <p className="text-lg font-bold text-primary-600">{formatPrice(stats.total)}</p>
+                            <div className="flex gap-3 mt-2 text-xs">
+                              <span className="text-green-600">✅ {formatPrice(stats.paid)}</span>
+                              <span className="text-yellow-600">⏳ {formatPrice(stats.pending)}</span>
+                              {stats.overdue > 0 && <span className="text-red-600">⚠️ {formatPrice(stats.overdue)}</span>}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Liste des paiements de l'unité */}
+                      <div className="space-y-3">
+                        {unitPayments.map((payment) => {
                 // Déterminer si le paiement est en retard (même si status est 'en_attente')
                 const isOverdue = payment.status === 'en_retard' || 
                   (payment.status === 'en_attente' && payment.dueDate && new Date(payment.dueDate) < new Date());
@@ -253,7 +395,7 @@ export default function ProprietairePayments() {
                               {formatPrice(payment.amount)}
                             </p>
                             <p className="text-sm text-gray-600">
-                              {payment.payer?.firstName} {payment.payer?.lastName} • Unité {payment.unit?.unitNumber}
+                              {payment.payer?.firstName} {payment.payer?.lastName}
                             </p>
                             <p className="text-xs text-gray-500">
                               {payment.description || 'Paiement'}
@@ -290,8 +432,13 @@ export default function ProprietairePayments() {
                       </div>
                     </div>
                   </div>
-                );
-              })}
+                        );
+                        })}
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
             </div>
           ) : (
             <div className="card p-12 text-center">

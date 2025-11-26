@@ -1,14 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/router'
-import Header from '../../components/Header'
-import Footer from '../../components/Footer'
 import ProtectedRoute from '../../components/ProtectedRoute'
 import { useAuth } from '../../contexts/AuthContext'
 
 export default function Dashboard() {
-  const { user, isAuthenticated } = useAuth()
+  const { user, isAuthenticated, loading: authLoading } = useAuth()
   const router = useRouter()
-  const [loading, setLoading] = useState(true)
+  const [isRedirecting, setIsRedirecting] = useState(false)
+  const hasRedirectedRef = useRef(false) // Utiliser un ref pour éviter les redirections multiples
 
   const getDashboardRoute = () => {
     if (!user) return '/login'
@@ -19,60 +18,94 @@ export default function Dashboard() {
         return '/dashboard/proprietaire'
       case 'locataire':
         return '/dashboard/locataire'
+      case 'visiteur':
+        return '/dashboard/visiteur'
       default:
-        return '/'
+        return '/login'
     }
   }
 
-  // Rediriger vers le dashboard approprié selon le rôle
+  // Rediriger immédiatement vers le dashboard approprié selon le rôle
   useEffect(() => {
+    // Attendre que l'authentification soit chargée
+    if (authLoading) return
+
+    // Éviter les redirections multiples avec un ref
+    if (hasRedirectedRef.current) return
+
     if (!isAuthenticated) {
-      router.push('/login')
+      // Ne rediriger que si on n'est pas déjà sur la page de login
+      if (router.pathname !== '/login' && router.asPath !== '/login') {
+        hasRedirectedRef.current = true
+        setIsRedirecting(true)
+        router.replace('/login').catch(() => {
+          // Si la navigation échoue, réinitialiser le flag
+          hasRedirectedRef.current = false
+          setIsRedirecting(false)
+        })
+      }
       return
     }
 
-    if (user && user.role !== 'visiteur') {
+    if (user) {
       const route = getDashboardRoute()
-      if (route !== router.pathname) {
-        router.push(route)
-      } else {
-        setLoading(false)
+      // Utiliser replace au lieu de push pour éviter les retours en arrière
+      // Ne rediriger que si nécessaire et si on n'est pas déjà en train de rediriger
+      if (route && route !== router.pathname && route !== router.asPath && route !== '/login') {
+        hasRedirectedRef.current = true
+        setIsRedirecting(true)
+        // Redirection immédiate sans setTimeout pour éviter les conflits
+        router.replace(route).catch(() => {
+          // Si la navigation échoue, réinitialiser le flag
+          hasRedirectedRef.current = false
+          setIsRedirecting(false)
+        })
+      } else if (route === router.pathname || route === router.asPath) {
+        // Si on est déjà sur la bonne route, réinitialiser
+        hasRedirectedRef.current = false
+        setIsRedirecting(false)
       }
-    } else if (user && user.role === 'visiteur') {
-      router.push('/')
-      setLoading(false)
-    } else {
-      setLoading(false)
     }
-  }, [user, isAuthenticated, router])
+  }, [user, isAuthenticated, authLoading, router])
 
-  return (
-    <ProtectedRoute requiredRoles={['admin', 'proprietaire', 'locataire']}>
-      <Header />
-      <div className="min-h-screen bg-gray-50 pt-20">
-        <div className="container mx-auto px-4 py-12">
-          {loading ? (
-            <div className="text-center">
-              <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-            </div>
-          ) : (
-            <div>
-              <h1 className="text-4xl font-bold mb-8">Mon Tableau de Bord</h1>
-              {user && (
-                <p className="text-xl text-gray-600 mb-8">
-                  Bienvenue, {user.firstName} {user.lastName}
-                </p>
-              )}
-              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-8">
-                <p className="text-yellow-800">
-                  Redirection vers votre tableau de bord spécifique...
-                </p>
-              </div>
-            </div>
-          )}
+  // Afficher un loader pendant le chargement de l'authentification ou la redirection
+  if (authLoading || isRedirecting || !isAuthenticated || !user) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
+          <p className="text-gray-600">
+            {authLoading ? 'Vérification de l\'authentification...' : 'Chargement...'}
+          </p>
         </div>
       </div>
-      <Footer />
+    )
+  }
+
+  // Si on arrive ici, l'utilisateur est authentifié mais la redirection n'a pas fonctionné
+  // Ne pas forcer la redirection ici pour éviter les conflits - laisser le useEffect gérer
+  const route = getDashboardRoute()
+  if (route && route !== router.pathname && route !== '/login' && !isRedirecting) {
+    // Le useEffect va gérer la redirection, juste afficher un loader
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
+          <p className="text-gray-600">Chargement...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Ne devrait jamais arriver ici, mais au cas où
+  return (
+    <ProtectedRoute>
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
+          <p className="text-gray-600">Chargement...</p>
+        </div>
+      </div>
     </ProtectedRoute>
   )
 }
